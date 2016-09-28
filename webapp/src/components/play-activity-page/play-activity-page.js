@@ -47,7 +47,7 @@ class PlayActivityPage {
             '}\n' +
             '';
 
-        this.compilerParams.buildCmd('gcc -lm -Wall -fmax-errors=10 -Wextra program.c -o program');
+        this.compilerParams.buildCmd('gcc -std=c11 -Wall -fmax-errors=10 -Wextra program.c -o program');
         this.compilerParams.execCmd('./program');
 
         this.doc = {
