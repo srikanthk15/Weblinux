@@ -63,7 +63,7 @@ class AutoIncluder {
         const updates = {};
         for (const file in this.browser.metaDataPathLookUp) { // eslint-disable-line no-restricted-syntax
             if (file.length === 0 || (file.indexOf('.h') < 0 && file.indexOf('.c') < 0)) continue;
-            //this.loadFile(file); //THERE IS A BUG HERE, I comment this line ! (Remi SHARROCK)
+            // this.loadFile(file); //THERE IS A BUG HERE, I comment this line ! (Remi SHARROCK)
             const getter = textGetter();
             const text = getter().split('\n');
             const session = this.editor.aceEditor.session;
