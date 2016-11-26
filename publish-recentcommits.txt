@@ -1,5 +1,5 @@
+d8a7a2a Merge remote-tracking branch 'origin/gh-pages' into remiUI
+3739c2f Update README.md
+4ae035b ajout google analytics
+b1af0af bug auto include headers
 4e0f775 but lint
-110f7e2 bug auto include headers
-402319f new line missing
-bfa5bcf ajout bouton save
-0a67002 ajout des packages npm pour le gulp build
