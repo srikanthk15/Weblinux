@@ -1,5 +1,5 @@
-Copyright &copy; 2014-2015 Lawrence Angrave  
-Version 0.0.2  
+Copyright &copy; 2016-2019 Rémi SHARROCK - Telecom ParisTech - IMT France
+Version 0.0.1 
 All Rights Reserved.
 
 This project's original source code ("CODE") is provided and licensed under the "Angrave Open Relicense (Illinois-Version)" license:
@@ -9,7 +9,7 @@ The CODE may be re-licensed under an open source license that is approved and re
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE SOFTWARE.
 
 ### Acknowledgement
-If you use or re-use the CODE, an acknowledgement to "Lawrence Angrave, University of Illinois and UIUC students" and [link back to this project](https://github.com/cs-education/sysbuild/) would be appreciated.
+Lawrence Angrave, University of Illinois and UIUC students" and [original project](https://github.com/cs-education/sysbuild/).
 
 ### Copyrights and Licenses for Third Party Software
 This project contains code written by third parties. Such software will
