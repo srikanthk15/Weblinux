@@ -1,5 +1,7 @@
 Copyright &copy; 2016-2019 Rémi SHARROCK - Telecom ParisTech - IMT France
+
 Version 0.0.1 
+
 All Rights Reserved.
 
 This project's original source code ("CODE") is provided and licensed under the "Angrave Open Relicense (Illinois-Version)" license:
