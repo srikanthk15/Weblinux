@@ -26,7 +26,7 @@ require.config({
         "ace": "bower_modules/ace/lib/ace",
         "typeahead-jquery": "bower_modules/typeahead.js/dist/typeahead.jquery.min",
         "bloodhound": "bower_modules/typeahead.js/dist/bloodhound.min", // exports window global "Bloodhound"
-        "FileSaver": "bower_modules/FileSaver/FileSaver.min", // exports window global "saveAs"
+        "FileSaver": "bower_modules/FileSaver/dist/FileSaver.min", // exports window global "saveAs"
         "Blob": "bower_modules/Blob/Blob", // exports window global "Blob"
         "bootstrap-contextmenu": "bower_modules/bootstrap-contextmenu/bootstrap-contextmenu",
         "bootbox": "bower_modules/bootbox.js/bootbox",
@@ -59,7 +59,7 @@ require.config({
         // directories to load 'or1k/index.js' and 'riscv/index.js', respectively. Such a require
         // call is supported in CommonJS environments, but not in AMD/RequireJS. The following
         // mapping rules convert the directory requires into the correct module IDs to be loaded.
-        "jor1k/worker/system": {
+        "jor1k/worker/init_openrisc": {
             // the following rule ensures that require('./or1k') will load './or1k/index.js'
             "jor1k/worker/or1k": "jor1k/worker/or1k/index",
 
@@ -67,7 +67,8 @@ require.config({
             // module ID is normalized, to prevent 'jor1k/worker/or1k/index' being incorrectly
             // mapped to 'jor1k/worker/or1k/index/index'
             "jor1k/worker/or1k/index": "jor1k/worker/or1k/index",
-
+        },
+        "jor1k/worker/init_riscv": {
              // similar to above
             "jor1k/worker/riscv": "jor1k/worker/riscv/index",
             "jor1k/worker/riscv/index": "jor1k/worker/riscv/index",

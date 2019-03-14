@@ -80,7 +80,7 @@ class SysRuntime {
 
         const jor1kparameters = {
             system: {
-                kernelURL: 'vmlinux.bin.bz2', // kernel image
+                kernelURL: 'kernel/vmlinux.bin.bz2', // kernel image
                 memorysize: 32, // in MB, must be a power of two
                 cpu: 'asm', // short name for the cpu to use
                 ncores: 1,
@@ -88,7 +88,7 @@ class SysRuntime {
             fs: {
                 basefsURL: 'basefs-compile.json', // json file with the basic filesystem configuration.
                 // json file with extended filesystem informations. Loaded after the basic filesystem has been loaded.
-                extendedfsURL: '../fs.json',
+                extendedfsURL: 'fs.json',
                 earlyload: [
                     'usr/bin/gcc',
                     'usr/libexec/gcc/or1k-linux-musl/4.9.0/cc1',
@@ -223,6 +223,7 @@ class SysRuntime {
     }
 
     sendExecCmd(cmd) {
+        console.log(cmd);
         if (!cmd) {
             return;
         }

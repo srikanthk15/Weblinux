@@ -1,4 +1,4 @@
-(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 // -------------------------------------------------
 // ------------------ UTF8 Helpers -----------------
 // -------------------------------------------------
@@ -478,7 +478,7 @@ bzip2.decompress = function(bits, stream, buf, bufsize) {
 
 module.exports = bzip2;
 
-},{"./messagehandler":28}],3:[function(require,module,exports){
+},{"./messagehandler":33}],3:[function(require,module,exports){
 // -------------------------------------------------
 // --------------------- ATA -----------------------
 // -------------------------------------------------
@@ -913,7 +913,66 @@ ATADev.prototype.WriteReg32 = function(addr, x) {
 
 module.exports = ATADev;
 
-},{"../messagehandler":28,"../utils":43}],4:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],4:[function(require,module,exports){
+// -------------------------------------------------
+// --------------------- CLINT ---------------------
+// -------------------------------------------------
+// CLINT (clock interrupt?) device for RISC-V
+
+// Actually this is mainly a dummy device as the timer
+// logic is managed directly by the CPU
+
+"use strict";
+var message = require('../messagehandler');
+var utils = require('../utils');
+
+/*
+ * 0000 msip hart 0
+ * 0004 msip hart 1
+ * ...
+ * 4000 mtimecmp hart 0 lo
+ * 4004 mtimecmp hart 0 hi
+ * 4008 mtimecmp hart 1 lo
+ * 400c mtimecmp hart 1 hi
+ * ...
+ * bff8 mtime lo
+ * bffc mtime hi
+ */
+
+var CSR_TIMECMP   = 0xC41;
+var CSR_TIME      = 0xC01;
+
+function CLINTDev(csr) {
+    this.csr = csr;
+    this.Reset();
+}
+
+CLINTDev.prototype.Reset = function() {
+    // 64-Bit registers
+    this.regs = new Uint32Array(0x3000);
+}
+
+CLINTDev.prototype.ReadReg32 = function (addr) {
+    // no one ever read it
+    message.Debug("CLINT: unknown ReadReg32: " + utils.ToHex(addr));
+    message.Abort();
+    return 0x0;
+}
+
+
+CLINTDev.prototype.WriteReg32 = function (addr, value) {
+    addr = addr | 0;
+    //message.Debug("CLINT: unknown WriteReg32: " + utils.ToHex(addr) + ": " + utils.ToHex(value));
+    this.regs[addr >> 2] = value;
+    if (addr == 0x4000) {
+        this.csr[CSR_TIMECMP] = value;
+        //message.Debug("delta: " + (this.csr[CSR_TIMECMP] - this.csr[CSR_TIME]));
+    }
+}
+
+module.exports = CLINTDev;
+
+},{"../messagehandler":33,"../utils":48}],5:[function(require,module,exports){
 // -------------------------------------------------
 // ----------------- Ethernet ----------------------
 // -------------------------------------------------
@@ -1669,7 +1728,7 @@ function EthDev(ram, intdev, mac) {
 
 module.exports = EthDev;
 
-},{"../messagehandler":28,"../utils":43}],5:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],6:[function(require,module,exports){
 // -------------------------------------------------
 // ---------------- Framebuffer --------------------
 // -------------------------------------------------
@@ -1729,7 +1788,7 @@ FBDev.prototype.GetBuffer = function () {
 
 module.exports = FBDev;
 
-},{"../messagehandler":28,"../utils":43}],6:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],7:[function(require,module,exports){
 // -------------------------------------------------
 // ---------------------- IRQ ----------------------
 // -------------------------------------------------
@@ -1835,7 +1894,7 @@ IRQDev.prototype.WriteReg32 = function (addr, value) {
 
 module.exports = IRQDev;
 
-},{"../messagehandler":28,"../utils":43}],7:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],8:[function(require,module,exports){
 // -------------------------------------------------
 // ------------------ KEYBOARD ---------------------
 // -------------------------------------------------
@@ -2164,7 +2223,114 @@ KeyboardDev.prototype.ReadReg8 = function (addr) {
 
 module.exports = KeyboardDev;
 
-},{"../messagehandler":28}],8:[function(require,module,exports){
+},{"../messagehandler":33}],9:[function(require,module,exports){
+// -------------------------------------------------
+// ---------------------- PLIC ---------------------
+// -------------------------------------------------
+// PLIC (Platform-Level Interrupt Controller) device for RISC-V
+
+"use strict";
+var message = require('../messagehandler');
+var utils = require('../utils');
+
+/*
+ * 0x0000   Priority Device 0
+ * 0x0004   Priority Device 1
+ * ....
+ * 0x2000   enable bitmask 32-bit * 32 entries for handler 0
+ * 0x2080   enable for handler 1
+ * 0x200000 hart threshold
+ * 0x200004 hart claim
+ * 0x201000 hart threshold
+ * ...
+ */
+
+var IRQ_S_EXT = 9;
+
+function PLICDev(cpuirqhandler) {
+    this.cpuirqhandler = cpuirqhandler
+    this.Reset();
+}
+
+PLICDev.prototype.Reset = function() {
+    // 32-Bit registers
+    this.regs = new Uint32Array(0x3000);
+    this.mask = 0x0;
+}
+
+PLICDev.prototype.ReadReg32 = function (addr) {
+    //message.Debug("PLIC: unknown ReadReg32: " + utils.ToHex(addr));
+    var i = 0;
+    if (addr == 0x00200004) {
+        for(i=0; i<32; i++)
+            if (this.mask & (1<<i)) return i;
+    }
+    return 0x0;
+}
+
+PLICDev.prototype.WriteReg32 = function (addr, value) {
+    //message.Debug("PLIC: unknown WriteReg32: " + utils.ToHex(addr) + ": " + utils.ToHex(value));
+}
+
+PLICDev.prototype.RaiseInterrupt = function (line) {
+    line = line | 0;
+    if (line == 0x1) return; // HTIF
+    //message.Debug("PLIC: Raise line " + line);
+    this.mask |= 1 << line;
+    this.cpuirqhandler.RaiseInterrupt(IRQ_S_EXT, -1);
+}
+
+PLICDev.prototype.ClearInterrupt = function (line) {
+    line = line | 0;
+    //message.Debug("PLIC: Clear line " + line);
+    this.mask &= ~(1 << line);
+    if (this.mask == 0x0) {
+        this.cpuirqhandler.ClearInterrupt(IRQ_S_EXT, -1);
+    }
+}
+
+module.exports = PLICDev;
+
+},{"../messagehandler":33,"../utils":48}],10:[function(require,module,exports){
+// -------------------------------------------------
+// --------------------- ROM -----------------------
+// -------------------------------------------------
+
+/* Basic Read Only Memory (ROM) device */
+
+var utils = require('../utils');
+var message = require('../messagehandler');
+
+// constructor
+function ROMDev(rom) {
+	this.rom = rom;
+	this.buffer32view = new Int32Array(this.rom);
+	this.buffer16view = new Int16Array(this.rom);
+	this.buffer8view = new Int8Array(this.rom);
+}
+
+ROMDev.prototype.Reset = function () {
+};
+
+ROMDev.prototype.ReadReg32 = function (addr) {
+    return this.buffer32view[addr >> 2];
+};
+
+ROMDev.prototype.ReadReg16 = function (addr) {
+    return this.buffer16view[addr >> 1];
+};
+
+ROMDev.prototype.ReadReg8 = function (addr) {
+    return this.buffer8view[addr];
+};
+
+
+
+module.exports = ROMDev;
+
+
+
+},{"../messagehandler":33,"../utils":48}],11:[function(require,module,exports){
 // -------------------------------------------------
 // ---------------------- RTC ----------------------
 // -------------------------------------------------
@@ -2245,7 +2411,7 @@ RTCDev.prototype.WriteReg32 = function (addr, value) {
 
 module.exports = RTCDev;
 
-},{"../messagehandler":28,"../utils":43}],9:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],12:[function(require,module,exports){
 // -------------------------------------------------
 // --------------------- SOUND ---------------------
 // -------------------------------------------------
@@ -2418,7 +2584,7 @@ SoundDev.prototype.WriteReg32 = function (addr, value) {
 
 module.exports = SoundDev;
 
-},{"../messagehandler":28,"../utils":43}],10:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],13:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- Timer ----------------------
 // -------------------------------------------------
@@ -2448,7 +2614,7 @@ TimerDev.prototype.WriteReg32 = function (addr, value) {
 
 module.exports = TimerDev;
 
-},{"../messagehandler":28}],11:[function(require,module,exports){
+},{"../messagehandler":33}],14:[function(require,module,exports){
 // -------------------------------------------------
 // ---------------- TOUCHSCREEN --------------------
 // -------------------------------------------------
@@ -2591,7 +2757,7 @@ TouchscreenDev.prototype.WriteReg32 = function (addr, value) {
 
 module.exports = TouchscreenDev;
 
-},{"../messagehandler":28,"../utils":43}],12:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],15:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- UART -----------------------
 // -------------------------------------------------
@@ -2623,13 +2789,14 @@ var UART_MSR   = 6; /* R: Modem Status Register */
 var UART_SCR   = 7; /* R/W: Scratch Register*/
 
 // Line Status register bits
-var UART_LSR_DATA_READY        = 0x1;  // data available
-var UART_LSR_TX_EMPTY        = 0x20; // TX (THR) buffer is empty
+var UART_LSR_DATA_READY        = 0x01; // data available
+var UART_LSR_TX_EMPTY          = 0x20; // TX (THR) buffer is empty
 var UART_LSR_TRANSMITTER_EMPTY = 0x40; // TX empty and line is idle
+var UART_LSR_INT_ANY           = 0x1E; // Any of the lsr-interrupt-triggering status bits
 
 // Interrupt enable register bits
 var UART_IER_MSI  = 0x08; /* Modem Status Changed int. */
-var UART_IER_BRK  = 0x04; /* Enable Break int. */
+var UART_IER_RLSI = 0x04; /* Enable Break int. Enable receiver line status interrupt */
 var UART_IER_THRI = 0x02; /* Enable Transmitter holding register int. */
 var UART_IER_RDI  = 0x01; /* Enable receiver data interrupt */
 
@@ -2669,7 +2836,7 @@ function UARTDev(id, intdev, intno) {
     this.intno = intno;
     this.intdev = intdev;
     this.id = id;
-    //this.verboseuart = true;
+    this.verboseuart = false;
     message.Register("tty" + id, this.ReceiveChar.bind(this) );
     this.Reset();
 }
@@ -2702,7 +2869,7 @@ UARTDev.prototype.Reset = function() {
 
 UARTDev.prototype.Step = function() {
     if(this.txbuf.length != 0) {
-        message.Send("tty"+this.id, this.txbuf);
+        message.Send("tty" + this.id, this.txbuf);
         this.txbuf = new Array();
     }
 }
@@ -2712,6 +2879,7 @@ UARTDev.prototype.ReceiveChar = function(data) {
     data.forEach(function(c) {
         this.rxbuf.push(c&0xFF);
     }.bind(this));
+    if (this.verboseuart) message.Debug("Received bytes: " + this.rxbuf.length);
     if (this.rxbuf.length > 0) {
         this.LSR |= UART_LSR_DATA_READY;
         this.ThrowInterrupt(UART_IIR_CTI);
@@ -2719,19 +2887,30 @@ UARTDev.prototype.ReceiveChar = function(data) {
 }
 
 UARTDev.prototype.CheckInterrupt = function() {
-    if ((this.ints & (1 << UART_IIR_CTI))  && (this.IER & UART_IER_RDI)) {
+    if (this.verboseuart) message.Debug("Check Interrupt " + this.ints);
+
+    if ((this.LSR & UART_LSR_INT_ANY) && (this.IER & UART_IER_RLSI)) {
+        this.IIR = UART_IIR_RLSI;
+        if (this.verboseuart) message.Debug('IIR_RLSI ' + this.intno);
+        this.intdev.RaiseInterrupt(this.intno);
+    } else
+    if ((this.ints & (1 << UART_IIR_CTI)) && (this.IER & UART_IER_RDI)) {
         this.IIR = UART_IIR_CTI;
+        if (this.verboseuart) message.Debug('IIR_CTI ' + this.intno);
         this.intdev.RaiseInterrupt(this.intno);
     } else
     if ((this.ints & (1 << UART_IIR_THRI)) && (this.IER & UART_IER_THRI)) {
         this.IIR = UART_IIR_THRI;
+        if (this.verboseuart) message.Debug('IIR_THRI ' + this.intno);
         this.intdev.RaiseInterrupt(this.intno);
     } else
     if ((this.ints & (1 << UART_IIR_MSI))  && (this.IER & UART_IER_MSI)) {
         this.IIR = UART_IIR_MSI;
+        if (this.verboseuart) message.Debug('IIR_MSI ' + this.intno);
         this.intdev.RaiseInterrupt(this.intno);
     } else {
         this.IIR = UART_IIR_NO_INT;
+        if (this.verboseuart) message.Debug('IIR_NO_INT ' + this.intno);
         this.intdev.ClearInterrupt(this.intno);
     }
 };
@@ -2750,6 +2929,7 @@ UARTDev.prototype.ReadReg8 = function(addr) {
 
     if (this.LCR & UART_LCR_DLAB) {  // Divisor latch access bit
         switch (addr) {
+
         case UART_DLL:
             return this.DLL;
             break;
@@ -2761,11 +2941,13 @@ UARTDev.prototype.ReadReg8 = function(addr) {
     }
 
     switch (addr) {
+
     case UART_RXBUF:
         var ret = 0x0; // if the buffer is empty, return 0
         if (this.rxbuf.length > 0) {
             ret = this.rxbuf.shift();
         }
+        if (this.verboseuart) message.Debug("Get RXBUF");
         if (this.rxbuf.length == 0) {
             this.LSR &= ~UART_LSR_DATA_READY;
             this.ClearInterrupt(UART_IIR_CTI);
@@ -2788,11 +2970,11 @@ UARTDev.prototype.ReadReg8 = function(addr) {
         {
             // the two top bits (fifo enabled) are always set
             var ret = (this.IIR & 0x0F) | 0xC0;
-             
+
             if (this.IIR == UART_IIR_THRI) {
                 this.ClearInterrupt(UART_IIR_THRI);
             }
-            
+
             return ret;
             break;
         }
@@ -2803,7 +2985,7 @@ UARTDev.prototype.ReadReg8 = function(addr) {
 
     case UART_LSR:
         // This gets polled many times a second, so logging is commented out
-        // if(this.verboseuart) message.Debug("Get UART_LSR " + this.ToBitDescription(this.LSR, LSR_BIT_DESC));
+        if (this.verboseuart) message.Debug("Get UART_LSR " + this.ToBitDescription(this.LSR, LSR_BIT_DESC));
         return this.LSR;
         break;
 
@@ -2819,10 +3001,12 @@ UARTDev.prototype.WriteReg8 = function(addr, x) {
 
     if (this.LCR & UART_LCR_DLAB) {
         switch (addr) {
+
         case UART_DLL:
             this.DLL = x;
             return;
             break;
+
         case UART_DLH:
             this.DLH = x;
             return;
@@ -2831,15 +3015,16 @@ UARTDev.prototype.WriteReg8 = function(addr, x) {
     }
 
     switch (addr) {
+
     case UART_TXBUF: 
          // we assume here, that the fifo is on
 
          // In the uart spec we reset UART_IIR_THRI now ...
         this.LSR &= ~UART_LSR_TRANSMITTER_EMPTY;
-        //this.LSR &= ~UART_LSR_TX_EMPTY;
+        this.LSR &= ~UART_LSR_TX_EMPTY;
 
         this.txbuf.push(x);
-        //message.Debug("send " + x);
+        if (this.verboseuart) message.Debug("send " + x);
         // the data is sent immediately
         this.LSR |= UART_LSR_TRANSMITTER_EMPTY | UART_LSR_TX_EMPTY; // txbuffer is empty immediately
         this.ThrowInterrupt(UART_IIR_THRI);
@@ -2848,25 +3033,27 @@ UARTDev.prototype.WriteReg8 = function(addr, x) {
     case UART_IER:
         // 2 = 10b ,5=101b, 7=111b
         this.IER = x & 0x0F; // only the first four bits are valid
-        //if(this.verboseuart) message.Debug("Set UART_IER " + this.ToBitDescription(x, IER_BIT_DESC));
+        this.ints &= ~(1 << UART_IER_THRI);
+        if (this.verboseuart) message.Debug("Set UART_IER " + this.ToBitDescription(x, IER_BIT_DESC));
         // Check immediately if there is a interrupt pending
         this.CheckInterrupt();
         break;
 
     case UART_FCR:
-        if(this.verboseuart) message.Debug("Set UART_FCR " + this.ToBitDescription(x, FCR_BIT_DESC));
+        if (this.verboseuart) message.Debug("Set UART_FCR " + this.ToBitDescription(x, FCR_BIT_DESC));
         this.FCR = x & 0xC9;
-        if (this.FCR & 2) {
+        if (x & 2) {
             this.ClearInterrupt(UART_IIR_CTI);
             this.rxbuf = new Array(); // clear receive fifo buffer
         }
-        if (this.FCR & 4) {
+        if (x & 4) {
             this.txbuf = new Array(); // clear transmit fifo buffer
+            this.ClearInterrupt(UART_IIR_THRI);
         }
         break;
 
     case UART_LCR:
-        if(this.verboseuart)  message.Debug("Set UART_LCR " + this.ToBitDescription(x, LCR_BIT_DESC));
+        if (this.verboseuart)  message.Debug("Set UART_LCR " + this.ToBitDescription(x, LCR_BIT_DESC));
         if ((this.LCR & 3) != 3) {
             message.Debug("Warning in UART: Data word length other than 8 bits are not supported");
         }
@@ -2874,7 +3061,7 @@ UARTDev.prototype.WriteReg8 = function(addr, x) {
         break;
 
     case UART_MCR:
-        if(this.verboseuart) message.Debug("Set UART_MCR " + this.ToBitDescription(x,MCR_BIT_DESC));
+        if (this.verboseuart) message.Debug("Set UART_MCR " + this.ToBitDescription(x,MCR_BIT_DESC));
         this.MCR = x;
         break;
 
@@ -2888,7 +3075,7 @@ UARTDev.prototype.WriteReg8 = function(addr, x) {
 
 module.exports = UARTDev;
 
-},{"../messagehandler":28,"../utils":43}],13:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],16:[function(require,module,exports){
 // -------------------------------------------------
 // ------------------- VIRTIO ----------------------
 // -------------------------------------------------
@@ -3391,7 +3578,7 @@ VirtIODev.prototype.WriteReg32 = function (addr, val) {
 
 module.exports = VirtIODev;
 
-},{"../messagehandler":28,"../utils":43,"./virtio/marshall":20}],14:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48,"./virtio/marshall":23}],17:[function(require,module,exports){
 // -------------------------------------------------
 // --------------------- 9P ------------------------
 // -------------------------------------------------
@@ -3463,7 +3650,7 @@ function Virtio9p(ramdev, filesystem) {
 }
 
 Virtio9p.prototype.Createfid = function(inode, type, uid) {
-	return {inodeid: inode, type: type, uid: uid};
+    return {inodeid: inode, type: type, uid: uid};
 }
 
 Virtio9p.prototype.Reset = function() {
@@ -3679,7 +3866,7 @@ Virtio9p.prototype.ReceiveRequest = function (ringidx, index, GetByte) {
             req[3] = inode.uid; // user id
             req[4] = inode.gid; // group id
             
-            req[5] = 0x1; // number of hard links
+            req[5] = inode.nlinks; // number of hard links
             req[6] = (inode.major<<8) | (inode.minor); // device id low
             req[7] = inode.size; // size low
             req[8] = this.BLOCKSIZE;
@@ -3951,7 +4138,7 @@ Virtio9p.prototype.ReceiveRequest = function (ringidx, index, GetByte) {
 
 module.exports = Virtio9p;
 
-},{"../../messagehandler":28,"../../utils":43,"./marshall":20}],15:[function(require,module,exports){
+},{"../../messagehandler":33,"../../utils":48,"./marshall":23}],18:[function(require,module,exports){
 // -------------------------------------------------
 // ------------- Block Virtio Device ---------------
 // -------------------------------------------------
@@ -4036,7 +4223,7 @@ VirtioBlock.prototype.ReceiveRequest = function (queueidx, index, GetByte, size)
 
 module.exports = VirtioBlock;
 
-},{"../../messagehandler":28,"../../utils":43,"./marshall":20}],16:[function(require,module,exports){
+},{"../../messagehandler":33,"../../utils":48,"./marshall":23}],19:[function(require,module,exports){
 // -------------------------------------------------
 // ------------ Console Virtio Device --------------
 // -------------------------------------------------
@@ -4123,7 +4310,7 @@ VirtioConsole.prototype.ReceiveRequest = function (queueidx, index, GetByte, siz
 
 module.exports = VirtioConsole;
 
-},{"../../messagehandler":28,"../../utils":43,"./marshall":20}],17:[function(require,module,exports){
+},{"../../messagehandler":33,"../../utils":48,"./marshall":23}],20:[function(require,module,exports){
 // -------------------------------------------------
 // ------------- Dummy Virtio Device ---------------
 // -------------------------------------------------
@@ -4148,7 +4335,7 @@ VirtioDummy.prototype.ReceiveRequest = function (index, GetByte) {
 
 module.exports = VirtioDummy;
 
-},{"../../messagehandler":28,"../../utils":43}],18:[function(require,module,exports){
+},{"../../messagehandler":33,"../../utils":48}],21:[function(require,module,exports){
 // -------------------------------------------------
 // -------------- GPU Virtio Device ----------------
 // -------------------------------------------------
@@ -4357,7 +4544,7 @@ VirtioGPU.prototype.ReceiveRequest = function (queueidx, index, GetByte, size) {
 
 module.exports = VirtioGPU;
 
-},{"../../messagehandler":28,"../../utils":43,"./marshall":20}],19:[function(require,module,exports){
+},{"../../messagehandler":33,"../../utils":48,"./marshall":23}],22:[function(require,module,exports){
 // -------------------------------------------------
 // ------------- Input Virtio Device ---------------
 // -------------------------------------------------
@@ -4538,7 +4725,7 @@ VirtioInput.prototype.ReceiveRequest = function (queueidx, index, GetByte, size)
 
 module.exports = VirtioInput;
 
-},{"../../messagehandler":28,"../../utils":43,"./marshall":20}],20:[function(require,module,exports){
+},{"../../messagehandler":33,"../../utils":48,"./marshall":23}],23:[function(require,module,exports){
 // -------------------------------------------------
 // ------------------ Marshall ---------------------
 // -------------------------------------------------
@@ -4712,7 +4899,7 @@ module.exports.Marshall = Marshall;
 module.exports.Unmarshall = Unmarshall;
 module.exports.Unmarshall2 = Unmarshall2;
 
-},{"../../../lib/utf8":1,"../../messagehandler":28}],21:[function(require,module,exports){
+},{"../../../lib/utf8":1,"../../messagehandler":33}],24:[function(require,module,exports){
 // -------------------------------------------------
 // ------------ Network Virtio Device --------------
 // -------------------------------------------------
@@ -4736,7 +4923,7 @@ function VirtioNET(ramdev) {
         this.configspace[i] = Math.floor(Math.random()*256);
     }
 
-    message.Register("virtio.net.transfer", this.Receive.bind(this) );
+    message.Register("ethmac", this.Receive.bind(this) );
 
     this.Reset();
 }
@@ -4822,7 +5009,7 @@ VirtioNET.prototype.ReceiveRequest = function (queueidx, index, GetByte, size) {
 
 module.exports = VirtioNET;
 
-},{"../../messagehandler":28,"../../utils":43,"./marshall":20}],22:[function(require,module,exports){
+},{"../../messagehandler":33,"../../utils":48,"./marshall":23}],25:[function(require,module,exports){
 var message = require('./messagehandler');
 var utils = require('./utils');
 var marshall = require('./dev/virtio/marshall');
@@ -4839,7 +5026,7 @@ elf.IsELF = function(buffer) {
     return false;
 }
     
-elf.Extract = function(srcbuffer, destbuffer) {
+elf.Extract = function(srcbuffer, ram) {
 
     var offset = 0;
     var output = [];
@@ -4867,6 +5054,12 @@ elf.Extract = function(srcbuffer, destbuffer) {
     //message.Debug("e_phoff: " +  utils.ToHex(e_phoff));
     //message.Debug("e_shoff: " +  utils.ToHex(e_shoff));
 
+    offset = 0x28;
+    output = marshall.Unmarshall(["h", "h", "h"], srcbuffer, offset);
+    var e_ehsize = output[0]; // size of each individual entry in program header table
+    var e_phentsize = output[1]; // Contains the size of a program header table entry.
+    var e_phnum = output[2]; // Contains the number of entries in the program header table.
+
     offset = 0x2E;
     output = marshall.Unmarshall(["h", "h", "h"], srcbuffer, offset);
     var e_shentsize = output[0]; // size of each individual entry in section header table
@@ -4876,9 +5069,38 @@ elf.Extract = function(srcbuffer, destbuffer) {
     //message.Debug("e_shnum: " +  utils.ToHex(e_shnum));
     //message.Debug("e_shstrndx: " +  utils.ToHex(e_shstrndx));
 
+    var program_headers = [];
+
+    for (var i = 0; i < e_phnum; i++) {
+
+        offset = e_phoff + i*e_phentsize;
+        output = marshall.Unmarshall(["w", "w", "w", "w", "w", "w", "w", "w"], srcbuffer, offset);
+
+        var section = {};
+        section.type = output[0];
+        section.offset = output[1];
+        section.vaddr = output[2];
+        section.paddr = output[3];
+        section.filesz = output[4];
+        section.memsz = output[5];
+        section.flags = output[6];
+        section.align = output[7];
+/*
+        message.Debug("elf program section"
+                + " type:" + section.type
+		+ " vaddr:" + utils.ToHex(section.vaddr)
+		+ " paddr:" + utils.ToHex(section.paddr)
+                + " offset:" + utils.ToHex(section.offset)
+                + " filesz:" + utils.ToHex(section.filesz)
+                + " memsz:" + utils.ToHex(section.memsz)
+                + " flags:" + utils.ToHex(section.flags));
+*/
+        program_headers.push(section);
+}
+
     var section_headers = [];
 
-    for (var i = 0; i < e_shnum; i++) {
+   for (var i = 0; i < e_shnum; i++) {
 
         offset = e_shoff + i*e_shentsize;
         output = marshall.Unmarshall(["w", "w", "w", "w", "w", "w"], srcbuffer, offset);
@@ -4888,38 +5110,38 @@ elf.Extract = function(srcbuffer, destbuffer) {
         section.type = output[1];
         section.flags = output[2];
         section.addr = output[3];
-        section.offs = output[4];
+        section.offset = output[4];
         section.size = output[5];
-        /*
-        message.Debug("" +
-		section.name + " " + 
-		utils.ToHex(section.addr) + " " + 
-		utils.ToHex(section.size));
-        */
+/*
+        message.Debug("elf section name:" + section.name
+		+ " addr:" + utils.ToHex(section.addr)
+                + " offset:" + utils.ToHex(section.offset)
+                + " size:" + utils.ToHex(section.size)
+                + " flags:" + utils.ToHex(section.flags)
+                + " type:" + utils.ToHex(section.type));
+*/
         section_headers.push(section);
+
     }
 
-    // copy necessary data into memory
-    for (var i = 0; i < section_headers.length; i++) {
+    for (var i = 0; i < program_headers.length; i++) {
+        if (program_headers[i].type != 1) continue;
+        if (program_headers[i].memsz == 0) continue;
 
-        // check for allocate flag (bit #1) and type != 8 (aka NOT NOBITS)
-        if ((((section_headers[i].flags >> 1) & 0x1) == 0x1) && (section_headers[i].type != 8)) {
-            for (var j = 0; j < section_headers[i].size; j++) {
-                destbuffer[section_headers[i].addr + j] = srcbuffer[section_headers[i].offs + j];
+        if (program_headers[i].filesz > 0) {
+            for (var j = 0; j < program_headers[i].filesz; j++) {
+                ram.Write8(program_headers[i].paddr + j, srcbuffer[program_headers[i].offset + j]);
             }
-        } else 
-        if ((((section_headers[i].flags >> 1) & 0x1) == 0x1) && (section_headers.type == 8)) {
-            // for .bss, load in zeroes, since it's not actually stored in the elf
-            for (var j = 0; j < section_headers[i].size; j++) {
-                destbuffer[section_headers[i].addr + j] = 0x0;
-            }
+        }
+        for (var j = 0; j < program_headers[i].memsz-program_headers[i].filesz; j++) {
+            ram.Write8(program_headers[i].paddr+program_headers[i].filesz + j, 0x0);
         }
     }
 }
 
 module.exports = elf;
 
-},{"./dev/virtio/marshall":20,"./messagehandler":28,"./utils":43}],23:[function(require,module,exports){
+},{"./dev/virtio/marshall":23,"./messagehandler":33,"./utils":48}],26:[function(require,module,exports){
 // -------------------------------------------------
 // ----------------- FILESYSTEM---------------------
 // -------------------------------------------------
@@ -5018,22 +5240,25 @@ function FS() {
             this.watchFiles[file.name] = true;
         }.bind(this)
     );
+
     message.Register("WatchDirectory",
         function(file) {
             this.watchDirectories[file.name] = true;
         }.bind(this)
     );
-    //message.Debug("registering readfile on worker");
+
     message.Register("ReadFile",
         function(file) {
             message.Send("ReadFile", (this.ReadFile.bind(this))(file));
         }.bind(this)
     );
+
     message.Register("tar",
         function(data) {
             message.Send("tar", this.tar.Pack(data));
         }.bind(this)
     );
+
     message.Register("sync",
         function(data) {
             message.Send("sync", this.tar.Pack(data));
@@ -5259,6 +5484,7 @@ FS.prototype.CreateInode = function() {
         minor : 0x0,
         data : new Uint8Array(0),
         symlink : "",
+        nlinks : 1,
         mode : 0x01ED,
         qid: {type: 0, version: 0, path: this.qidnumber},
         url: "", // url to download the file
@@ -5266,18 +5492,18 @@ FS.prototype.CreateInode = function() {
     };
 }
 
-
-
 FS.prototype.CreateDirectory = function(name, parentid) {
     var x = this.CreateInode();
     x.name = name;
     x.parentid = parentid;
     x.mode = 0x01FF | S_IFDIR;
     x.updatedir = true;
+    x.nlinks = 2; // . and ..
     if (parentid >= 0) {
         x.uid = this.inodes[parentid].uid;
         x.gid = this.inodes[parentid].gid;
         x.mode = (this.inodes[parentid].mode & 0x1FF) | S_IFDIR;
+        this.inodes[parentid].nlinks++;
     }
     x.qid.type = S_IFDIR >> 8;
     this.PushInode(x);
@@ -5291,6 +5517,7 @@ FS.prototype.CreateFile = function(filename, parentid) {
     x.parentid = parentid;
     x.uid = this.inodes[parentid].uid;
     x.gid = this.inodes[parentid].gid;
+    this.inodes[parentid].nlinks++;
     x.qid.type = S_IFREG >> 8;
     x.mode = (this.inodes[parentid].mode & 0x1B6) | S_IFREG;
     this.PushInode(x);
@@ -5307,6 +5534,7 @@ FS.prototype.CreateNode = function(filename, parentid, major, minor) {
     x.minor = minor;
     x.uid = this.inodes[parentid].uid;
     x.gid = this.inodes[parentid].gid;
+    this.inodes[parentid].nlinks++;
     x.qid.type = S_IFSOCK >> 8;
     x.mode = (this.inodes[parentid].mode & 0x1B6);
     this.PushInode(x);
@@ -5319,6 +5547,7 @@ FS.prototype.CreateSymlink = function(filename, parentid, symlink) {
     x.parentid = parentid;
     x.uid = this.inodes[parentid].uid;
     x.gid = this.inodes[parentid].gid;
+    this.inodes[parentid].nlinks++;
     x.qid.type = S_IFLNK >> 8;
     x.symlink = symlink;
     x.mode = S_IFLNK;
@@ -5369,7 +5598,7 @@ FS.prototype.CloseInode = function(id) {
     var inode = this.GetInode(id);
     if (inode.status == STATUS_UNLINKED) {
         //message.Debug("Filesystem: Delete unlinked file");
-        inode.status == STATUS_INVALID;
+        inode.status = STATUS_INVALID;
         inode.data = new Uint8Array(0);
         inode.size = 0;
     }
@@ -5414,6 +5643,8 @@ FS.prototype.Rename = function(olddirid, oldname, newdirid, newname) {
 
     this.inodes[olddirid].updatedir = true;
     this.inodes[newdirid].updatedir = true;
+    this.inodes[olddirid].nlinks--;
+    this.inodes[newdirid].nlinks++;
 
     this.NotifyListeners(idx, "rename", {oldpath: oldpath});
     
@@ -5504,10 +5735,12 @@ FS.prototype.Unlink = function(idx) {
     }
     // don't delete the content. The file is still accessible
     this.inodes[inode.parentid].updatedir = true;
+    this.inodes[inode.parentid].nlinks--;
     inode.status = STATUS_UNLINKED;
     inode.nextid = -1;
     inode.firstid = -1;
     inode.parentid = -1;
+    inode.nlinks--;
     return true;
 }
 
@@ -5602,6 +5835,10 @@ FS.prototype.MergeFile = function(file) {
     }
     this.inodes[ids.id].data = file.data;
     this.inodes[ids.id].size = file.data.length;
+    // Don't forget to update the timestamps !
+    this.inodes[ids.id].mtime = Math.floor((new Date()).getTime()/1000);
+    this.inodes[ids.id].atime = this.inodes[ids.id].mtime;
+    this.inodes[ids.id].ctime = this.inodes[ids.id].mtime;
 }
 
 
@@ -5652,7 +5889,6 @@ FS.prototype.NotifyListeners = function(id, action, info) {
     }
 }
 
-
 FS.prototype.Check = function() {
     for(var i=1; i<this.inodes.length; i++)
     {
@@ -5678,9 +5914,7 @@ FS.prototype.Check = function() {
             } 
         }
     }
-
 }
-
 
 FS.prototype.FillDirectory = function(dirid) {
     var inode = this.GetInode(dirid);
@@ -5723,10 +5957,12 @@ FS.prototype.FillDirectory = function(dirid) {
     while(id != -1) {
         offset += marshall.Marshall(
         ["Q", "d", "b", "s"],
-        [this.inodes[id].qid,
-        offset+13+8+1+2+UTF8.UTF8Length(this.inodes[id].name),
-        this.inodes[id].mode >> 12,
-        this.inodes[id].name],
+        [
+            this.inodes[id].qid,
+            offset+13+8+1+2+UTF8.UTF8Length(this.inodes[id].name),
+            this.inodes[id].mode >> 12,
+            this.inodes[id].name
+        ],
         inode.data, offset);
         id = this.inodes[id].nextid;
     }
@@ -5772,7 +6008,7 @@ FS.prototype.PrepareCAPs = function(id) {
 
 module.exports = FS;
 
-},{"../../lib/utf8":1,"../bzip2":2,"../dev/virtio/marshall":20,"../messagehandler":28,"../utils":43,"./fsloader":24,"./lazyUint8Array":25,"./tar":26}],24:[function(require,module,exports){
+},{"../../lib/utf8":1,"../bzip2":2,"../dev/virtio/marshall":23,"../messagehandler":33,"../utils":48,"./fsloader":27,"./lazyUint8Array":28,"./tar":29}],27:[function(require,module,exports){
 // -------------------------------------------------
 // ------------- FILESYSTEM LOADER -----------------
 // -------------------------------------------------
@@ -5821,15 +6057,17 @@ FSLoader.prototype.HandleDirContents = function(list, parentid) {
          inode.uid = tag.uid|0;
          inode.gid = tag.gid|0;
          inode.parentid = parentid;
+         this.fs.inodes[inode.parentid].nlinks++;
          inode.mode = parseInt(tag.mode, 8);
 
          if (tag.path) { // link
              inode.mode = S_IFLNK | S_IRWXUGO;
              inode.symlink = tag.path;
              this.fs.PushInode(inode);
-         } else if (!tag.size) { // dir
+         } else if (typeof tag.size === "undefined") { // dir
              inode.mode |= S_IFDIR;
              inode.updatedir = true;
+             inode.nlinks = 2; // . and ..
              this.fs.PushInode(inode);
              if (tag.child)
                  this.HandleDirContents(tag.child, id != -1 ? id : this.fs.inodes.length-1);
@@ -5857,7 +6095,7 @@ FSLoader.prototype.OnJSONLoaded = function(fsxml)
 
     this.sysrootdir = t.src;
     if (String(this.sysrootdir) !== this.sysrootdir) message.Debug("No sysroot (src tag)!");
-    this.sysrootdir += "/";
+    this.sysrootdir = this.fs.userinfo.path + this.sysrootdir + "/";
 
     this.HandleDirContents(t.fs, 0);
 
@@ -5873,7 +6111,7 @@ FSLoader.prototype.LoadJSON = function(url)
 
 module.exports = FSLoader;
 
-},{"../messagehandler":28,"../utils":43}],25:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],28:[function(require,module,exports){
 "use strict";
 
 var message = require("../messagehandler");
@@ -5968,7 +6206,7 @@ LazyUint8Array.prototype.CacheLength = function LazyUint8Array_CacheLength() {
 
 module.exports = LazyUint8Array;
 
-},{"../messagehandler":28}],26:[function(require,module,exports){
+},{"../messagehandler":33}],29:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- TAR ------------------------
 // -------------------------------------------------
@@ -6183,7 +6421,7 @@ TAR.prototype.Pack = function(path) {
 
 module.exports = TAR;
 
-},{"../messagehandler":28}],27:[function(require,module,exports){
+},{"../messagehandler":33}],30:[function(require,module,exports){
 // In case math.imul doesn't exists: 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/imul
 
@@ -6197,7 +6435,263 @@ module.exports = Math.imul || function(a, b) {
     return ((al * bl) + (((ah * bl + al * bh) << 16) >>> 0)|0);
 };
 
-},{}],28:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
+// -------------------------------------------------
+// --------------- INIT OPENRISC -------------------
+// -------------------------------------------------
+
+"use strict";
+// common
+var message = require('./messagehandler'); // global variable
+var utils = require('./utils');
+
+// CPU
+var OR1KCPU = require('./or1k');
+
+var UARTDev = require('./dev/uart');
+var IRQDev = require('./dev/irq');
+var TimerDev = require('./dev/timer');
+var FBDev = require('./dev/framebuffer');
+var EthDev = require('./dev/ethmac');
+var ATADev = require('./dev/ata');
+var RTCDev = require('./dev/rtc');
+var TouchscreenDev = require('./dev/touchscreen');
+var KeyboardDev = require('./dev/keyboard');
+var SoundDev = require('./dev/sound');
+var VirtIODev = require('./dev/virtio');
+var Virtio9p = require('./dev/virtio/9p');
+var VirtioDummy = require('./dev/virtio/dummy');
+var VirtioInput = require('./dev/virtio/input');
+var VirtioNET = require('./dev/virtio/net');
+var VirtioBlock = require('./dev/virtio/block');
+var VirtioGPU = require('./dev/virtio/gpu');
+var VirtioConsole = require('./dev/virtio/console');
+
+/*
+    Heap Layout for OpenRISC emulation
+    ==================================
+    The heap is needed by the asm.js CPU.
+    For compatibility all CPUs use the same layout
+    by using the different views of typed arrays
+
+    ------ Core 1 ------
+    0x0     -  0x7F     32 CPU registers
+    0x80    -  0x1FFF   CPU specific, usually unused or temporary data
+    0x2000  -  0x3FFF   group 0 (system control and status)
+    0x4000  -  0x5FFF   group 1 (data MMU)
+    0x6000  -  0x7FFF   group 2 (instruction MMU)
+    ------ Core 2 ------
+    0x8000  -  0x807F   32 CPU registers
+    0x8080  -  0x9FFF   CPU specific, usually unused or temporary data
+    0xA000  -  0xBFFF   group 0 (system control and status)
+    0xC000  -  0xDFFF   group 1 (data MMU)
+    0xE000  -  0xFFFF   group 2 (instruction MMU)
+    ------ Core 3 ------
+    ...
+    ------- RAM --------
+    0x100000 -  ...     RAM
+*/
+
+function InitOpenRISC(system, initdata) {
+    message.Debug("Init OpenRISC SoC");
+    var irqhandler = system;
+
+    try {
+        system.cpu = new OR1KCPU(initdata.cpu, system.ram, system.heap, system.ncores);
+    } catch (e) {
+        message.Debug("Error: failed to create CPU:" + e);
+    }
+    system.devices.push(system.cpu);
+
+    system.irqdev = new IRQDev(irqhandler);
+    system.timerdev = new TimerDev();
+    system.uartdev0 = new UARTDev(0, irqhandler, 0x2);
+    system.uartdev1 = new UARTDev(1, irqhandler, 0x3);
+    system.ethdev = new EthDev(system.ram, irqhandler);
+    system.ethdev.TransmitCallback = function(data) {
+        message.Send("ethmac", data);
+    };
+
+    system.fbdev = new FBDev(system.ram);
+    system.atadev = new ATADev(irqhandler);
+    system.tsdev = new TouchscreenDev(irqhandler);
+    system.kbddev = new KeyboardDev(irqhandler);
+    system.snddev = new SoundDev(irqhandler, system.ram);
+    system.rtcdev = new RTCDev(irqhandler);
+
+    //system.virtioinputdev = new VirtioInput(system.ram);
+    //system.virtionetdev = new VirtioNET(system.ram);
+    //system.virtioblockdev = new VirtioBlock(system.ram);
+    system.virtiodummydev = new VirtioDummy(system.ram);
+    //system.virtiogpudev = new VirtioGPU(system.ram);
+    //system.virtioconsoledev = new VirtioConsole(system.ram);
+    system.virtiodev1 = new VirtIODev(irqhandler, 0x6, system.ram, system.virtio9pdev);
+    system.virtiodev2 = new VirtIODev(irqhandler, 0xB, system.ram, system.virtiodummydev);
+    system.virtiodev3 = new VirtIODev(irqhandler, 0xC, system.ram, system.virtiodummydev);
+
+    system.devices.push(system.irqdev);
+    system.devices.push(system.timerdev);
+    system.devices.push(system.uartdev0);
+    system.devices.push(system.uartdev1);
+    system.devices.push(system.ethdev);
+    system.devices.push(system.fbdev);
+    system.devices.push(system.atadev);
+    system.devices.push(system.tsdev);
+    system.devices.push(system.kbddev);
+    system.devices.push(system.snddev);
+    system.devices.push(system.rtcdev);
+    system.devices.push(system.virtio9pdev);
+    system.devices.push(system.virtiodev1);
+    system.devices.push(system.virtiodev2);
+    system.devices.push(system.virtiodev3);
+
+    //system.devices.push(system.virtioinputdev);
+    //system.devices.push(system.virtionetdev);
+    //system.devices.push(system.virtioblockdev);
+    system.devices.push(system.virtiodummydev);
+    //system.devices.push(system.virtiogpudev);
+    //system.devices.push(system.virtioconsoledev);
+
+    system.ram.AddDevice(system.uartdev0,   0x90000000, 0x7);
+    system.ram.AddDevice(system.fbdev,      0x91000000, 0x1000);
+    system.ram.AddDevice(system.ethdev,     0x92000000, 0x1000);
+    system.ram.AddDevice(system.tsdev,      0x93000000, 0x1000);
+    system.ram.AddDevice(system.kbddev,     0x94000000, 0x100);
+    system.ram.AddDevice(system.uartdev1,   0x96000000, 0x7);
+    system.ram.AddDevice(system.virtiodev1, 0x97000000, 0x1000);
+    system.ram.AddDevice(system.snddev,     0x98000000, 0x400);
+    system.ram.AddDevice(system.rtcdev,     0x99000000, 0x1000);
+    system.ram.AddDevice(system.irqdev,     0x9A000000, 0x1000);
+    system.ram.AddDevice(system.timerdev,   0x9B000000, 0x1000);
+    system.ram.AddDevice(system.virtiodev2, 0x9C000000, 0x1000);
+    system.ram.AddDevice(system.virtiodev3, 0x9D000000, 0x1000);
+    system.ram.AddDevice(system.atadev,     0x9E000000, 0x1000);
+
+}
+
+module.exports = InitOpenRISC;
+
+},{"./dev/ata":3,"./dev/ethmac":5,"./dev/framebuffer":6,"./dev/irq":7,"./dev/keyboard":8,"./dev/rtc":11,"./dev/sound":12,"./dev/timer":13,"./dev/touchscreen":14,"./dev/uart":15,"./dev/virtio":16,"./dev/virtio/9p":17,"./dev/virtio/block":18,"./dev/virtio/console":19,"./dev/virtio/dummy":20,"./dev/virtio/gpu":21,"./dev/virtio/input":22,"./dev/virtio/net":24,"./messagehandler":33,"./or1k":36,"./utils":48}],32:[function(require,module,exports){
+// -------------------------------------------------
+// ---------------- INIT RISCV ---------------------
+// -------------------------------------------------
+
+/*
+compile dts file via
+dtc -O dtb riscv.dts > riscv.dtb
+od -A n -t x1 -v riscv.dtb | sed 's/ /,0x/g'
+*/
+
+"use strict";
+// common
+var message = require('./messagehandler'); // global variable
+var utils = require('./utils');
+
+// CPU
+var RISCVCPU = require('./riscv');;
+
+// Devices
+var HTIF = require('./riscv/htif');
+var CLINTDev = require('./dev/clint');
+var PLICDev = require('./dev/plic');
+var ROMDev = require('./dev/rom');
+var UARTDev = require('./dev/uart');
+
+//var IRQDev = require('./dev/irq');
+//var TimerDev = require('./dev/timer');
+//var FBDev = require('./dev/framebuffer');
+//var EthDev = require('./dev/ethmac');
+//var ATADev = require('./dev/ata');
+//var RTCDev = require('./dev/rtc');
+//var TouchscreenDev = require('./dev/touchscreen');
+//var KeyboardDev = require('./dev/keyboard');
+//var SoundDev = require('./dev/sound');
+var VirtIODev = require('./dev/virtio');
+var Virtio9p = require('./dev/virtio/9p');
+var VirtioDummy = require('./dev/virtio/dummy');
+var VirtioNET = require('./dev/virtio/net');
+//var VirtioInput = require('./dev/virtio/input');
+//var VirtioBlock = require('./dev/virtio/block');
+//var VirtioGPU = require('./dev/virtio/gpu');
+//var VirtioConsole = require('./dev/virtio/console');
+
+function InitRISCV(system, initdata) {
+    message.Debug("Init RISCV SoC");
+    var irqhandler = system;
+
+    // at the moment the htif interface is part of the CPU initialization.
+    // However, it uses uartdev0
+    system.htif = new HTIF(system.ram, system);
+   
+    system.cpu = new RISCVCPU(initdata.cpu, system.ram, system.htif, system.heap, system.ncores);
+
+    system.devices.push(system.cpu);
+
+    system.rom = new ArrayBuffer(0x2000);
+    var buffer32view = new Int32Array(system.rom);
+    var buffer8view = new Uint8Array(system.rom);
+    // boot process starts at 0x1000
+    buffer32view[0x400] = 0x297 + 0x80000000 - 0x1000; // auipc t0, DRAM_BASE=0x80000000
+    buffer32view[0x401] = 0x597; // auipc a1, 0 // a1 = 0x1004
+    buffer32view[0x402] = 0x58593 + ((8*4-4)<<20); // addi a1, a1, 0 (pointer to dtb)
+    buffer32view[0x403] = 0xf1402573; // csrr a0,mhartid
+    buffer32view[0x404] = 0x00028067  // jalr zero, t0, 0 (jump straight to DRAM_BASE)
+    buffer32view[0x405] = 0x00000000; // trap vector
+    buffer32view[0x406] = 0x00000000; // trap vector
+    buffer32view[0x407] = 0x00000000; // trap vector
+
+    message.Debug("Load DTB");
+    utils.LoadBinaryResourceII(initdata.dtbURL,
+    function(buffer) {
+        var configstring = new Uint8Array(buffer);
+        for(var i=0; i<configstring.length; i++) buffer8view[0x1020+i] = configstring[i];
+    }.bind(this)
+    , false, function(error){throw error;});
+
+
+    system.virtionetdev = new VirtioNET(system.ram);
+    system.virtiodummydev = new VirtioDummy(system.ram);
+    //system.virtioinputdev = new VirtioInput(system.ram);
+    //system.virtioblockdev = new VirtioBlock(system.ram);
+    //system.virtiogpudev = new VirtioGPU(system.ram);
+    //system.virtioconsoledev = new VirtioConsole(system.ram);
+
+    system.virtiodev1 = new VirtIODev(irqhandler, 0x3, system.ram, system.virtio9pdev);
+    system.virtiodev2 = new VirtIODev(irqhandler, 0x4, system.ram, system.virtionetdev);
+    system.virtiodev3 = new VirtIODev(irqhandler, 0x5, system.ram, system.virtiodummydev);
+    system.virtiodev4 = new VirtIODev(irqhandler, 0x6, system.ram, system.virtiodummydev);
+    system.virtiodev5 = new VirtIODev(irqhandler, 0x7, system.ram, system.virtiodummydev);
+
+    system.romdev = new ROMDev(system.rom);
+    system.uartdev0 = new UARTDev(0, irqhandler, 2);
+    system.clintdev = new CLINTDev(system.csr);
+    system.plicdev = new PLICDev(system.cpu);
+
+    system.devices.push(system.romdev);
+    system.devices.push(system.uartdev0);
+    system.devices.push(system.clintdev);
+    system.devices.push(system.plicdev);
+    system.devices.push(system.virtiodev1);
+    system.devices.push(system.virtiodev2);
+    system.devices.push(system.virtiodev3);
+    system.devices.push(system.virtiodev4);
+    system.devices.push(system.virtiodev5);
+    system.devices.push(system.virtio9pdev);
+
+    system.ram.AddDevice(system.romdev,      0x00000000, 0x7);
+    system.ram.AddDevice(system.uartdev0,    0x03000000, 0x2000);
+    system.ram.AddDevice(system.clintdev,    0x02000000, 0x2000);
+    system.ram.AddDevice(system.plicdev,     0x04000000, 0xF00000);
+    system.ram.AddDevice(system.virtiodev1,  0x20000000, 0x2000);
+    system.ram.AddDevice(system.virtiodev2,  0x30000000, 0x2000);
+    system.ram.AddDevice(system.virtiodev3,  0x40000000, 0x2000);
+    system.ram.AddDevice(system.virtiodev4,  0x50000000, 0x2000);
+    system.ram.AddDevice(system.virtiodev5,  0x60000000, 0x2000);
+}
+
+module.exports = InitRISCV;
+
+},{"./dev/clint":4,"./dev/plic":9,"./dev/rom":10,"./dev/uart":15,"./dev/virtio":16,"./dev/virtio/9p":17,"./dev/virtio/dummy":20,"./dev/virtio/net":24,"./messagehandler":33,"./riscv":43,"./riscv/htif":42,"./utils":48}],33:[function(require,module,exports){
 // -------------------------------------------------
 // ------------- MessageHandler --------------------
 // -------------------------------------------------
@@ -6205,6 +6699,7 @@ module.exports = Math.imul || function(a, b) {
 "use strict";
 
 var run = true;
+var workingpath = '';
 
 function Send(command, data) {
     postMessage(
@@ -6260,7 +6755,8 @@ onmessage = function(e) {
     }
 }
 
-Register("Abort", function(){run = false;});
+Register("Abort", function(){ run = false; });
+Register("WorkingPath", function(data){ workingpath = data; });
 
 module.exports.Register = Register;
 module.exports.Debug = Debug;
@@ -6268,9 +6764,1329 @@ module.exports.Error = DoError;
 module.exports.Warning = Warning;
 module.exports.Abort = Abort;
 module.exports.Send = Send;
+module.exports.GetWorkingPath = function() { return workingpath; };
+
+},{}],34:[function(require,module,exports){
+// -------------------------------------------------
+// ----------------- Dynamic CPU -------------------
+// -------------------------------------------------
+"use strict";
+
+var message = require('../../messagehandler');
+var utils = require('../../utils');
+
+// special purpose register index
+var SPR_UPR = 1; // unit present register
+var SPR_SR = 17; // supervision register
+var SPR_EEAR_BASE = 48; // exception ea register
+var SPR_EPCR_BASE = 32; // exception pc register
+var SPR_ESR_BASE = 64; // exception sr register
+var SPR_IMMUCFGR = 4; // Instruction MMU Configuration register
+var SPR_DMMUCFGR = 3; // Data MMU Configuration register
+var SPR_ICCFGR = 6; // Instruction Cache configuration register
+var SPR_DCCFGR = 5; // Data Cache Configuration register
+var SPR_VR = 0; // Version register
+
+// exception types and addresses
+var EXCEPT_ITLBMISS = 0xA00; // instruction translation lookaside buffer miss
+var EXCEPT_IPF = 0x400; // instruction page fault
+var EXCEPT_RESET = 0x100; // reset the processor
+var EXCEPT_DTLBMISS = 0x900; // data translation lookaside buffer miss
+var EXCEPT_DPF = 0x300; // instruction page fault
+var EXCEPT_BUSERR = 0x200; // wrong memory access
+var EXCEPT_TICK = 0x500; // tick counter interrupt
+var EXCEPT_INT = 0x800; // interrupt of external devices
+var EXCEPT_SYSCALL = 0xC00; // syscall, jump into supervisor mode
+var EXCEPT_TRAP = 0xE00; // syscall, jump into supervisor mode
+
+// constructor
+function DynamicCPU(ram) {
+    this.ram = ram;
+
+    // registers
+    // r[32] and r[33] are used to calculate the virtual address and physical address
+    // to make sure that they are not transformed accidently into a floating point number
+    this.r = new Int32Array(this.ram.heap, 0, 34 << 2);
+    this.f = new Float32Array(this.ram.heap, 0, 32 << 2);
+
+    // special purpose registers
+    this.group0 = new Int32Array(this.ram.heap, 0x2000, 0x2000);
+
+    // data tlb
+    this.group1 = new Int32Array(this.ram.heap, 0x4000, 0x2000);
+
+    // instruction tlb
+    this.group2 = new Int32Array(this.ram.heap, 0x6000, 0x2000);
+
+    // define variables and initialize
+    this.pc = 0x0; // instruction pointer in multiples of four
+    this.nextpc = 0x0; // pointer to next instruction in multiples of four
+    this.fence = 0x0;
+    this.ppc = 0x0;
+    this.delayedins_at_fence = false;
+
+    this.delayedins = false; // the current instruction is an delayed instruction, one cycle before a jump
+    this.raise_interrupt = false;
+    this.idle = false;
+
+    this.EA = -1; // hidden register for atomic lwa operation
+
+    this.TTMR = 0x0; // Tick timer mode register
+    this.TTCR = 0x0; // Tick timer count register
+
+    this.PICMR = 0x3; // interrupt controller mode register (use nmi)
+    this.PICSR = 0x0; // interrupt controller set register
+
+    // flags
+    this.SR_SM = true; // supervisor mode
+    this.SR_TEE = false; // tick timer Exception Enabled
+    this.SR_IEE = false; // interrupt Exception Enabled
+    this.SR_DCE = false; // Data Cache Enabled
+    this.SR_ICE = false; // Instruction Cache Enabled
+    this.SR_DME = false; // Data MMU Enabled
+    this.SR_IME = false; // Instruction MMU Enabled
+    this.SR_LEE = false; // Little Endian Enabled
+    this.SR_CE = false; // CID Enabled ?
+    this.SR_F = false; // Flag for l.sf... instructions
+    this.SR_CY = false; // Carry Flag
+    this.SR_OV = false; // Overflow Flag
+    this.SR_OVE = false; // Overflow Flag Exception
+    this.SR_DSX = false; // Delay Slot Exception
+    this.SR_EPH = false; // Exception Prefix High
+    this.SR_FO = true; // Fixed One, always set
+    this.SR_SUMRA = false; // SPRS User Mode Read Access, or TRAP exception disable?
+    this.SR_CID = 0x0; //Context ID
+
+    this.recompilepath = '';
+    this.recompilepid = -1;
+
+    this.Reset();
+}
+
+DynamicCPU.prototype.Reset = function() {
+    this.TTMR = 0x0;
+    this.TTCR = 0x0;
+    this.PICMR = 0x3;
+    this.PICSR = 0x0;
+
+    this.group0[SPR_IMMUCFGR] = 0x18; // 0 ITLB has one way and 64 sets
+    this.group0[SPR_DMMUCFGR] = 0x18; // 0 DTLB has one way and 64 sets
+    this.group0[SPR_ICCFGR] = 0x48;
+    this.group0[SPR_DCCFGR] = 0x48;
+    this.group0[SPR_VR] = 0x12000001;
+
+    // UPR present
+    // data mmu present
+    // instruction mmu present
+    // PIC present (architecture manual seems to be wrong here)
+    // Tick timer present
+    this.group0[SPR_UPR] = 0x619;
+
+    this.ppc = 0x0;
+
+    this.Exception(EXCEPT_RESET, 0x0); // set pc values
+    this.pc = this.nextpc;
+    this.nextpc = this.nextpc + 1|0;
+}
+
+DynamicCPU.prototype.InvalidateTLB = function() {
+}
+
+DynamicCPU.prototype.GetTimeToNextInterrupt = function () {
+
+    if ((this.TTMR >> 30) == 0) return -1;
+    var delta = (this.TTMR & 0xFFFFFFF) - (this.TTCR & 0xFFFFFFF);
+    return delta;
+}
+
+DynamicCPU.prototype.GetTicks = function () {
+    if ((this.TTMR >> 30) == 0) return -1;
+    return this.TTCR & 0xFFFFFFF;
+}
+
+DynamicCPU.prototype.ProgressTime = function (delta) {
+    this.TTCR = (this.TTCR + delta) & 0xFFFFFFFF;
+}
+
+DynamicCPU.prototype.AnalyzeImage = function() // we haveto define these to copy the cpus
+{
+    this.boot_dtlb_misshandler_address = this.ram.int32mem[0x900]|0;
+    this.boot_itlb_misshandler_address = this.ram.int32mem[0xA00]|0;;
+    this.current_pgd = ((this.ram.int32mem[0x2010 >> 2]&0xFFF)<<16) | (this.ram.int32mem[0x2014 >> 2] & 0xFFFF)|0;;
+}
+
+DynamicCPU.prototype.SetFlags = function (x) {
+    this.SR_SM = (x & (1 << 0)) ? true : false;
+    this.SR_TEE = (x & (1 << 1)) ? true : false;
+    var old_SR_IEE = this.SR_IEE;
+    this.SR_IEE = (x & (1 << 2)) ? true : false;
+    this.SR_DCE = (x & (1 << 3)) ? true : false;
+    this.SR_ICE = (x & (1 << 4)) ? true : false;
+    var old_SR_DME = this.SR_DME;
+    this.SR_DME = (x & (1 << 5)) ? true : false;
+    var old_SR_IME = this.SR_IME;
+    this.SR_IME = (x & (1 << 6)) ? true : false;
+    this.SR_LEE = (x & (1 << 7)) ? true : false;
+    this.SR_CE = (x & (1 << 8)) ? true : false;
+    this.SR_F = (x & (1 << 9)) ? true : false;
+    this.SR_CY = (x & (1 << 10)) ? true : false;
+    this.SR_OV = (x & (1 << 11)) ? true : false;
+    this.SR_OVE = (x & (1 << 12)) ? true : false;
+    this.SR_DSX = (x & (1 << 13)) ? true : false;
+    this.SR_EPH = (x & (1 << 14)) ? true : false;
+    this.SR_FO = true;
+    this.SR_SUMRA = (x & (1 << 16)) ? true : false;
+    this.SR_CID = (x >> 28) & 0xF;
+    if (this.SR_LEE) {
+        message.Debug("little endian not supported");
+        message.Abort();
+    }
+    if (this.SR_CID) {
+        message.Debug("context id not supported");
+        message.Abort();
+    }
+    if (this.SR_EPH) {
+        message.Debug("exception prefix not supported");
+        message.Abort();
+    }
+    if (this.SR_DSX) {
+        message.Debug("delay slot exception not supported");
+        message.Abort();
+    }
+    if (this.SR_IEE && !old_SR_IEE) {
+        this.CheckForInterrupt();
+    }
+};
+
+DynamicCPU.prototype.GetFlags = function () {
+    var x = 0x0;
+    x |= this.SR_SM ? (1 << 0) : 0;
+    x |= this.SR_TEE ? (1 << 1) : 0;
+    x |= this.SR_IEE ? (1 << 2) : 0;
+    x |= this.SR_DCE ? (1 << 3) : 0;
+    x |= this.SR_ICE ? (1 << 4) : 0;
+    x |= this.SR_DME ? (1 << 5) : 0;
+    x |= this.SR_IME ? (1 << 6) : 0;
+    x |= this.SR_LEE ? (1 << 7) : 0;
+    x |= this.SR_CE ? (1 << 8) : 0;
+    x |= this.SR_F ? (1 << 9) : 0;
+    x |= this.SR_CY ? (1 << 10) : 0;
+    x |= this.SR_OV ? (1 << 11) : 0;
+    x |= this.SR_OVE ? (1 << 12) : 0;
+    x |= this.SR_DSX ? (1 << 13) : 0;
+    x |= this.SR_EPH ? (1 << 14) : 0;
+    x |= this.SR_FO ? (1 << 15) : 0;
+    x |= this.SR_SUMRA ? (1 << 16) : 0;
+    x |= (this.SR_CID << 28);
+    return x;
+};
+
+DynamicCPU.prototype.CheckForInterrupt = function () {
+    if (!this.SR_IEE) {
+        return;
+    }
+    if (this.PICMR & this.PICSR) {
+        this.raise_interrupt = true;
+    }
+};
+
+DynamicCPU.prototype.RaiseInterrupt = function (line, cpuid) {
+    var lmask = 1 << line;
+    this.PICSR |= lmask;
+    this.CheckForInterrupt();
+};
+
+DynamicCPU.prototype.ClearInterrupt = function (line, cpuid) {
+    this.PICSR &= ~(1 << line);
+};
+
+DynamicCPU.prototype.FetchAndInstantiate = function(url, importObject) {
+  return fetch(url).then(response =>
+    response.arrayBuffer()
+  ).then(bytes =>
+    //WebAssembly.compile(bytes)
+    WebAssembly.instantiate(bytes, importObject)
+  ).then(results => {
+    message.Debug('compiled');
+    this.instance = results.instance;
+    }
+  );
+}
 
 
-},{}],29:[function(require,module,exports){
+DynamicCPU.prototype.SetSPR = function (idx, x) {
+    var address = idx & 0x7FF;
+    var group = (idx >> 11) & 0x1F;
+
+    switch (group) {
+    case 0:
+        if (address == SPR_SR) {
+            this.SetFlags(x);
+        }
+        if (address == 20) {
+            //message.Debug('current pid: ' + x);
+        } else
+        if (address == 21) {
+            this.recompilepid = x;
+            if (x == -1) this.recompilepath = '';
+            else {
+                message.Debug("recompile pid: " + x + " path:" + this.recompilepath);
+                var importObject = {
+                    env: {
+                        Exception: function(excepttype, addr) {
+                            //message.Debug("Exception called at " + utils.ToHex(addr));
+                            //message.Abort();
+                            this.SR_F = !!this.instance.exports.GetSR_F();
+                            this.pc = this.instance.exports.GetPC()>>2;
+                            this.delayedins = false;
+                            this.Exception(excepttype, addr);
+                        }.bind(this),
+                        ramp: 0x100000,
+                        group1p: 0x4000,
+                        current_pgd: this.current_pgd,
+                        EXCEPT_DPF: 0x300,
+                        memory: this.ram.memory,
+                        table: new WebAssembly.Table({initial:0, maximum:0, element:"anyfunc"}),
+                        memoryBase: 0x0,
+                        tableBase: 0x0
+                    },
+                };
+                if (this.recompilepath == "/usr/bin/fbdemo")
+                this.FetchAndInstantiate(message.GetWorkingPath()+"/precompiled/fbdemo.wasm", importObject);
+            }
+        } else
+        if (address == 22) {
+            this.recompilepath += String.fromCharCode(x);
+        }
+        this.group0[address] = x;
+        break;
+    case 1:
+        // Data MMU
+        this.group1[address] = x;
+        break;
+    case 2:
+        // ins MMU
+        this.group2[address] = x;
+        break;
+    case 3:
+        // data cache, not supported
+    case 4:
+        // ins cache, not supported
+        break;
+    case 8:
+        this.idle = true;
+        break;
+    case 9:
+        // pic
+        switch (address) {
+        case 0:
+            this.PICMR = x | 0x3; // we use non maskable interrupt here
+            // check immediate for interrupt
+            if (this.SR_IEE) {
+                if (this.PICMR & this.PICSR) {
+                    message.Debug("Error in SetSPR: Direct triggering of interrupt exception not supported?");
+                    message.Abort();
+                }
+            }
+            break;
+        case 2: // PICSR
+            break;
+        default:
+            message.Debug("Error in SetSPR: interrupt address not supported");
+            message.Abort();
+        }
+        break;
+    case 10:
+        //tick timer
+        switch (address) {
+        case 0:
+            this.TTMR = x;
+            if (((this.TTMR >> 30)&3) != 0x3) {
+                message.Debug("Error in SetSPR: Timer mode other than continuous not supported");
+                message.Abort();
+            }
+            break;
+        case 1:
+            this.TTCR = x;
+            break;
+        default:
+            message.Debug("Error in SetSPR: Tick timer address not supported");
+            message.Abort();
+            break;
+        }
+        break;
+
+    default:
+        message.Debug("Error in SetSPR: group " + group + " not found");
+        message.Abort();
+        break;
+    }
+};
+
+DynamicCPU.prototype.GetSPR = function (idx) {
+    var address = idx & 0x7FF;
+    var group = (idx >> 11) & 0x1F;
+
+    switch (group) {
+    case 0:
+        if (address == SPR_SR) {
+            return this.GetFlags();
+        }
+        return this.group0[address];
+    case 1:
+        return this.group1[address];
+    case 2:
+        return this.group2[address];
+    case 8:
+        return 0x0;
+
+    case 9:
+        // pic
+        switch (address) {
+        case 0:
+            return this.PICMR;
+        case 2:
+            return this.PICSR;
+        default:
+            message.Debug("Error in GetSPR: PIC address unknown");
+            message.Abort();
+            break;
+        }
+        break;
+
+    case 10:
+        // tick Timer
+        switch (address) {
+        case 0:
+            return this.TTMR;
+        case 1:
+            return this.TTCR; // or clock
+        default:
+            message.Debug("Error in GetSPR: Tick timer address unknown");
+            message.Abort();
+            break;
+        }
+        break;
+    default:
+        message.Debug("Error in GetSPR: group " + group +  " unknown");
+        message.Abort();
+        break;
+    }
+};
+
+
+DynamicCPU.prototype.Exception = function (excepttype, addr) {
+    var except_vector = excepttype | (this.SR_EPH ? 0xf0000000 : 0x0);
+    //message.Debug("Info: Raising Exception " + utils.ToHex(excepttype));
+
+    this.SetSPR(SPR_EEAR_BASE, addr);
+    this.SetSPR(SPR_ESR_BASE, this.GetFlags());
+
+    this.EA = -1;
+    this.SR_OVE = false;
+    this.SR_SM = true;
+    this.SR_IEE = false;
+    this.SR_TEE = false;
+    this.SR_DME = false;
+
+    this.fence = this.ppc;
+
+    this.nextpc = except_vector>>2;
+
+    switch (excepttype) {
+    case EXCEPT_RESET:
+        break;
+
+    case EXCEPT_ITLBMISS:
+    case EXCEPT_IPF:
+    case EXCEPT_DTLBMISS:
+    case EXCEPT_DPF:
+    case EXCEPT_BUSERR:
+    case EXCEPT_TICK:
+    case EXCEPT_INT:
+    case EXCEPT_TRAP:
+        this.SetSPR(SPR_EPCR_BASE, (this.pc<<2) - (this.delayedins ? 4 : 0));
+        break;
+
+    case EXCEPT_SYSCALL:
+        this.SetSPR(SPR_EPCR_BASE, (this.pc<<2) + 4 - (this.delayedins ? 4 : 0));
+        break;
+    default:
+        message.Debug("Error in Exception: exception type not supported");
+        message.Abort();
+    }
+    this.delayedins = false;
+    this.delayedins_at_fence = false;
+    this.SR_IME = false;
+
+};
+
+
+DynamicCPU.prototype.DTLBLookup = function (addr, write) {
+    if (!this.SR_DME) {
+        return addr;
+    }
+    // pagesize is 8192 bytes
+    // nways are 1
+    // nsets are 64
+
+    var setindex = (addr >> 13) & 63;
+    var tlmbr = this.group1[0x200 | setindex]; // match register
+    if (((tlmbr & 1) == 0) || ((tlmbr >> 19) != (addr >> 19))) {
+        this.Exception(EXCEPT_DTLBMISS, addr);
+        return -1;
+    }
+        // set lru
+        if (tlmbr & 0xC0) {
+            message.Debug("Error: LRU ist not supported");
+            message.Abort();
+        }
+
+    var tlbtr = this.group1[0x280 | setindex]; // translate register
+
+    // check if supervisor mode
+    if (this.SR_SM) {
+        if (
+            ((!write) && (!(tlbtr & 0x100))) || // check if SRE
+            ((write) && (!(tlbtr & 0x200)))     // check if SWE
+           ) {
+            this.Exception(EXCEPT_DPF, addr);
+            return -1;
+           }
+    } else {
+        if (
+               ((!write) && (!(tlbtr & 0x40))) || // check if URE
+               ((write) && (!(tlbtr & 0x80)))     // check if UWE
+           ) {
+            this.Exception(EXCEPT_DPF, addr);
+            return -1;
+           }
+    }
+    return ((tlbtr & 0xFFFFE000) | (addr & 0x1FFF));
+};
+
+// the slow and safe version
+DynamicCPU.prototype.GetInstructionPointer = function (addr) {
+    if (!this.SR_IME) {
+        return addr;
+    }
+    // pagesize is 8192 bytes
+    // nways are 1
+    // nsets are 64
+
+    var setindex = (addr >> 13) & 63;
+    setindex &= 63; // number of sets
+    var tlmbr = this.group2[0x200 | setindex];
+
+    // test if tlmbr is valid
+    if (((tlmbr & 1) == 0) || ((tlmbr >> 19) != (addr >> 19))) {
+        this.Exception(EXCEPT_ITLBMISS, this.pc<<2);
+        return -1;
+    }
+    // set lru
+    if (tlmbr & 0xC0) {
+        message.Debug("Error: LRU ist not supported");
+        message.Abort();
+    }
+
+    var tlbtr = this.group2[0x280 | setindex];
+    //Test for page fault
+    // check if supervisor mode
+    if (this.SR_SM) {
+        // check if user read enable is not set(URE)
+        if (!(tlbtr & 0x40)) {
+            this.Exception(EXCEPT_IPF, this.pc<<2);
+            return -1;
+        }
+    } else {
+        // check if supervisor read enable is not set (SRE)
+        if (!(tlbtr & 0x80)) {
+            this.Exception(EXCEPT_IPF, this.pc<<2);
+            return -1;
+        }
+    }
+    return (tlbtr & 0xFFFFE000) | (addr & 0x1FFF);
+};
+
+DynamicCPU.prototype.Step = function (steps, clockspeed) {
+    steps = steps|0;
+    clockspeed = clockspeed|0;
+    var ins = 0x0;
+    var imm = 0x0;
+    var i = 0;
+    var rindex = 0x0;
+    var rA = 0x0,
+        rB = 0x0,
+        rD = 0x0;
+
+    // local variables could be faster
+    var r = this.r;
+    var f = this.f;
+    var ram = this.ram;
+    var int32mem = this.ram.int32mem;
+    var group2 = this.group2;
+
+    // to get the instruction
+    var setindex = 0x0;
+    var tlmbr = 0x0;
+    var tlbtr = 0x0;
+    var jump = 0x0;
+    var delta = 0x0;
+
+    var dsteps = 0;
+    var waitoneblock = 0;
+
+    for(;;) {
+        dsteps = dsteps - 1|0;
+
+        if ((this.ppc|0) == (this.fence|0)) {
+
+            if (!this.delayedins_at_fence) {
+                this.delayedins = false;
+            }
+
+            // do this not so often
+            if (dsteps < 0)
+            if (!this.delayedins_at_fence) { // Not sure, if we need this check
+                dsteps = dsteps + 64|0;
+                steps = steps - 64|0;
+                if (steps < 0) return 0;
+
+                // ---------- TICK ----------
+                // timer enabled
+                if ((this.TTMR >> 30) != 0) {
+                    delta = (this.TTMR & 0xFFFFFFF) - (this.TTCR & 0xFFFFFFF);
+                    this.TTCR = (this.TTCR + clockspeed) & 0xFFFFFFFF;
+                    if (delta < clockspeed) {
+                        // if interrupt enabled
+                        if (this.TTMR & (1 << 29)) {
+                            this.TTMR |= (1 << 28); // set pending interrupt
+                        }
+                    }
+                }
+
+                // check if pending and check if interrupt must be triggered
+                if (this.SR_TEE) { // SR_IEE and SR_TEE are always set parallel
+                    if (this.TTMR & (1 << 28)) {
+                        this.Exception(EXCEPT_TICK, this.group0[SPR_EEAR_BASE]);
+                        this.pc = this.nextpc|0;
+                        this.nextpc = this.nextpc + 1|0;
+                    }
+                }
+            }
+
+            if (this.SR_IEE)
+            if (this.raise_interrupt) {
+                this.raise_interrupt = false;
+                this.Exception(EXCEPT_INT, this.group0[SPR_EEAR_BASE]);
+                this.pc = this.nextpc|0;
+                this.nextpc = this.nextpc + 1|0;
+            }
+
+            var ppc = this.GetInstructionPointer(this.pc<<2)|0;
+            if (ppc == -1) {
+                this.pc = this.nextpc|0;
+                this.nextpc = this.nextpc + 1|0;
+                this.delayedins_at_fence = false;
+                continue;
+            }
+            this.ppc = ppc;
+
+            if (this.delayedins_at_fence) {
+                this.delayedins_at_fence = false;
+                this.fence = this.ppc + 4|0;
+            } else {
+                this.fence = ((this.ppc >> 13) + 1) << 13; // next page
+            } // pc and ppc check
+
+
+           if  ((!this.SR_SM) && (this.group0[20] == this.recompilepid) && this.instance && !waitoneblock && this.pc < 0x10000000) {
+	       //var newppc = this.instance.exports.DTLBLookup(this.pc, 0, this.pc, this.SR_F, 0)|0;
+	       //var newpc = this.instance.exports.DTLBRefill(this.pc|0, 64, this.pc|0, this.SR_F|0, 0)|0;
+               //message.Debug("" + utils.ToHex(newpc) + " " + utils.ToHex(ppc));
+               //message.Debug("" + utils.ToHex(newpc) + " " + utils.ToHex(this.ram.int32mem[this.current_pgd>>2]));
+
+               var oldpc = this.pc;
+               var maxsteps = steps;
+               //var maxsteps = this.GetTimeToNextInterrupt();
+               //if (steps < maxsteps) maxsteps = steps;
+               //message.Debug("run recompiled code initalsteps=" + maxsteps + " from pc=" + utils.ToHex(this.pc<<2) + " oldpc=" + utils.ToHex(this.oldpc<<2));
+
+               var retsteps = this.instance.exports.Exec(this.pc<<2, maxsteps, this.SR_F?1:0);
+               steps = retsteps;
+               // no exception
+               if (!this.SR_SM) {
+                   this.SR_F = !!this.instance.exports.GetSR_F();
+                   this.pc = this.instance.exports.GetPC()>>2;
+                   this.nextpc = this.pc + 1|0;
+                   this.fence = this.ppc|0;
+               }
+               dsteps = -1;
+/*
+               message.Debug(
+                    "run done initalsteps=" +
+                    maxsteps +
+                    " returnedsteps=" +
+                    retsteps +
+                    " from pc=" + utils.ToHex(oldpc<<2) +
+                    " to pc=" + utils.ToHex(this.pc<<2) + " clockspeed=" + clockspeed);
+*/
+               //if (steps == 0x0) return 0x0;
+               waitoneblock = 1;
+               continue;
+               //if (steps == 3) message.Debug('start recompiled code pc=' + utils.ToHex(this.pc<<2));
+           }
+
+        } // end of fence
+        waitoneblock = 0;
+
+        // ---------------------------------------
+        ins = int32mem[this.ppc >> 2]|0;
+        this.ppc = this.ppc + 4|0;
+
+        switch ((ins >> 26)&0x3F) {
+
+        case 0x0:
+            // j
+            jump = this.pc + ((ins << 6) >> 6);
+            this.pc = this.nextpc|0;
+            this.nextpc = jump|0;
+            if ((this.fence|0) == (this.ppc|0)) {
+                this.delayedins_at_fence = true;
+            } else {
+                this.fence = this.ppc + 4|0;
+            }
+            this.delayedins = true;
+            continue;
+
+        case 0x1:
+            // jal
+            jump = this.pc + ((ins << 6) >> 6);
+            r[9] = (this.nextpc<<2) + 4;
+            this.pc = this.nextpc|0;
+            this.nextpc = jump|0;
+            if ((this.fence|0) == (this.ppc|0)) {
+                this.delayedins_at_fence = true;
+            } else {
+                this.fence = this.ppc + 4|0;
+            }
+            this.delayedins = true;
+            continue;
+
+        case 0x3:
+            // bnf
+            if (this.SR_F) {
+                break;
+            }
+            jump = this.pc + ((ins << 6) >> 6);
+            this.pc = this.nextpc|0;
+            this.nextpc = jump|0;
+            if ((this.fence|0) == (this.ppc|0)) {
+                this.delayedins_at_fence = true;
+            } else {
+                this.fence = this.ppc + 4|0;
+            }
+            this.delayedins = true;
+            continue;
+
+        case 0x4:
+            // bf
+            if (!this.SR_F) {
+                break;
+            }
+            jump = this.pc + ((ins << 6) >> 6);
+            this.pc = this.nextpc|0;
+            this.nextpc = jump|0;
+            if ((this.fence|0) == (this.ppc|0)) {
+                this.delayedins_at_fence = true;
+            } else {
+                this.fence = this.ppc + 4|0;
+            }
+            this.delayedins = true;
+            continue;
+
+        case 0x5:
+            // nop
+            break;
+
+        case 0x6:
+            // movhi or macrc
+            rindex = (ins >> 21) & 0x1F;
+            // if 16th bit is set
+            if (ins & 0x10000) {
+                message.Debug("Error: macrc not supported\n");
+                message.Abort();
+            } else {
+                r[rindex] = ((ins & 0xFFFF) << 16); // movhi
+            }
+            break;
+
+        case 0x8:
+            // sys and trap
+            if ((ins&0xFFFF0000) == 0x21000000) {
+                message.Debug("Trap at " + utils.ToHex(this.pc<<2));
+                this.Exception(EXCEPT_TRAP, this.group0[SPR_EEAR_BASE]);
+            } else {
+                this.Exception(EXCEPT_SYSCALL, this.group0[SPR_EEAR_BASE]);
+            }
+            break;
+
+        case 0x9:
+            // rfe
+            this.nextpc = this.GetSPR(SPR_EPCR_BASE)>>2;
+            this.fence = this.ppc|0;
+            this.SetFlags(this.GetSPR(SPR_ESR_BASE)); // could raise an exception
+            break;
+
+        case 0x11:
+            // jr
+            jump = r[(ins >> 11) & 0x1F]>>2;
+            this.pc = this.nextpc|0;
+            this.nextpc = jump|0;
+            if ((this.fence|0) == (this.ppc|0)) {
+                this.delayedins_at_fence = true;
+            } else {
+                this.fence = this.ppc + 4|0;
+            }
+            this.delayedins = true;
+            continue;
+
+        case 0x12:
+            // jalr
+            jump = r[(ins >> 11) & 0x1F]>>2;
+            r[9] = (this.nextpc<<2) + 4|0;
+            this.pc = this.nextpc|0;
+            this.nextpc = jump|0;
+            if ((this.fence|0) == (this.ppc|0)) {
+                this.delayedins_at_fence = true;
+            } else {
+                this.fence = this.ppc + 4|0;
+            }
+            this.delayedins = true;
+            continue;
+
+        case 0x1B:
+            // lwa
+            r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
+            if ((r[32] & 3) != 0) {
+                message.Debug("Error in lwa: no unaligned access allowed");
+                message.Abort();
+            }
+            r[33] = this.DTLBLookup(r[32], false);
+            if (r[33] == -1) {
+                break;
+            }
+            this.EA = r[33];
+            r[(ins >> 21) & 0x1F] = r[33]>0?int32mem[r[33] >> 2]:ram.Read32Big(r[33]);
+            break;
+
+
+        case 0x21:
+            // lwz
+            r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
+            if ((r[32] & 3) != 0) {
+                message.Debug("Error in lwz: no unaligned access allowed");
+                message.Abort();
+            }
+            r[33] = this.DTLBLookup(r[32], false);
+            if (r[33] == -1) {
+                break;
+            }
+            r[(ins >> 21) & 0x1F] = r[33]>0?int32mem[r[33] >> 2]:ram.Read32Big(r[33]);
+            break;
+
+        case 0x23:
+            // lbz
+            r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
+            r[33] = this.DTLBLookup(r[32], false);
+            if (r[33] == -1) {
+                break;
+            }
+            r[(ins >> 21) & 0x1F] = ram.Read8Big(r[33]);
+            break;
+
+        case 0x24:
+            // lbs
+            r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
+            r[33] = this.DTLBLookup(r[32], false);
+            if (r[33] == -1) {
+                break;
+            }
+            r[(ins >> 21) & 0x1F] = ((ram.Read8Big(r[33])) << 24) >> 24;
+            break;
+
+        case 0x25:
+            // lhz
+            r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
+            r[33] = this.DTLBLookup(r[32], false);
+            if (r[33] == -1) {
+                break;
+            }
+            r[(ins >> 21) & 0x1F] = ram.Read16Big(r[33]);
+            break;
+
+        case 0x26:
+            // lhs
+            r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
+            r[33] = this.DTLBLookup(r[32], false);
+            if (r[33] == -1) {
+                break;
+            }
+            r[(ins >> 21) & 0x1F] = (ram.Read16Big(r[33]) << 16) >> 16;
+            break;
+
+        case 0x27:
+            // addi signed
+            imm = (ins << 16) >> 16;
+            rA = r[(ins >> 16) & 0x1F];
+            rindex = (ins >> 21) & 0x1F;
+            r[rindex] = rA + imm;
+            this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+            break;
+
+        case 0x28:
+            // addi signed with carry
+            imm = (ins << 16) >> 16;
+            rA = r[(ins >> 16) & 0x1F];
+            rindex = (ins >> 21) & 0x1F;
+            r[rindex] = (rA + imm|0) + (this.SR_CY?1:0)|0;
+            if (this.SR_CY) {
+                this.SR_CY = (r[rindex]>>>0) <= (rA>>>0);
+            } else {
+                this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+            }
+            break;
+
+        case 0x29:
+            // andi
+            r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] & (ins & 0xFFFF);
+            break;
+
+        case 0x2A:
+            // ori
+            r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] | (ins & 0xFFFF);
+            break;
+
+        case 0x2B:
+            // xori
+            rA = r[(ins >> 16) & 0x1F];
+            r[(ins >> 21) & 0x1F] = rA ^ ((ins << 16) >> 16);
+            break;
+
+        case 0x2C:
+            // muli
+            {
+            rindex = (ins >> 21) & 0x1F;
+            rA = r[(ins >> 16) & 0x1F];
+            r[rindex] = (rA * ((ins << 16) >> 16))&0xFFFFFFFF;
+            var rAl = rA & 0xFFFF;
+            var rBl = ins & 0xFFFF;
+            r[rindex] = r[rindex] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
+            }
+            break;
+
+        case 0x2D:
+            // mfspr
+            r[(ins >> 21) & 0x1F] = this.GetSPR(r[(ins >> 16) & 0x1F] | (ins & 0xFFFF));
+            break;
+
+        case 0x2E:
+            switch ((ins >> 6) & 0x3) {
+            case 0:
+                // slli
+                r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] << (ins & 0x1F);
+                break;
+            case 1:
+                // rori
+                r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] >>> (ins & 0x1F);
+                break;
+            case 2:
+                // srai
+                r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] >> (ins & 0x1F);
+                break;
+            default:
+                message.Debug("Error: opcode 2E function not implemented");
+                message.Abort();
+                break;
+            }
+            break;
+
+        case 0x2F:
+            // sf...i
+            imm = (ins << 16) >> 16;
+            switch ((ins >> 21) & 0x1F) {
+            case 0x0:
+                // sfnei
+                this.SR_F = (r[(ins >> 16) & 0x1F] == imm) ? true : false;
+                break;
+            case 0x1:
+                // sfnei
+                this.SR_F = (r[(ins >> 16) & 0x1F] != imm) ? true : false;
+                break;
+            case 0x2:
+                // sfgtui
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) > (imm >>> 0)) ? true : false;
+                break;
+            case 0x3:
+                // sfgeui
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) >= (imm >>> 0)) ? true : false;
+                break;
+            case 0x4:
+                // sfltui
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) < (imm >>> 0)) ? true : false;
+                break;
+            case 0x5:
+                // sfleui
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) <= (imm >>> 0)) ? true : false;
+                break;
+            case 0xa:
+                // sfgtsi
+                this.SR_F = (r[(ins >> 16) & 0x1F] > imm) ? true : false;
+                break;
+            case 0xb:
+                // sfgesi
+                this.SR_F = (r[(ins >> 16) & 0x1F] >= imm) ? true : false;
+                break;
+            case 0xc:
+                // sfltsi
+                this.SR_F = (r[(ins >> 16) & 0x1F] < imm) ? true : false;
+                break;
+            case 0xd:
+                // sflesi
+                this.SR_F = (r[(ins >> 16) & 0x1F] <= imm) ? true : false;
+                break;
+            default:
+                message.Debug("Error: sf...i not supported yet");
+                message.Abort();
+                break;
+            }
+            break;
+
+        case 0x30:
+            // mtspr
+            imm = (ins & 0x7FF) | ((ins >> 10) & 0xF800);
+            this.SetSPR(r[(ins >> 16) & 0x1F] | imm, r[(ins >> 11) & 0x1F]);
+            if (this.idle) {
+                this.idle = false;
+                if (this.raise_interrupt == false)
+                if (!(this.TTMR & (1 << 28))) {
+                    this.pc = this.nextpc|0;
+                    this.nextpc = this.nextpc + 1|0;
+                    return steps|0;
+                }
+            }
+            break;
+
+       case 0x32:
+            // floating point
+            rA = (ins >> 16) & 0x1F;
+            rB = (ins >> 11) & 0x1F;
+            rD = (ins >> 21) & 0x1F;
+            switch (ins & 0xFF) {
+            case 0x0:
+                // lf.add.s
+                f[rD] = f[rA] + f[rB];
+                break;
+            case 0x1:
+                // lf.sub.s
+                f[rD] = f[rA] - f[rB];
+                break;
+            case 0x2:
+                // lf.mul.s
+                f[rD] = f[rA] * f[rB];
+                break;
+            case 0x3:
+                // lf.div.s
+                f[rD] = f[rA] / f[rB];
+                break;
+            case 0x4:
+                // lf.itof.s
+                f[rD] = r[rA];
+                break;
+            case 0x5:
+                // lf.ftoi.s
+                r[rD] = f[rA];
+                break;
+            case 0x7:
+                // lf.madd.s
+                f[rD] += f[rA] * f[rB];
+                break;
+            case 0x8:
+                // lf.sfeq.s
+                this.SR_F = (f[rA] == f[rB]) ? true : false;
+                break;
+            case 0x9:
+                // lf.sfne.s
+                this.SR_F = (f[rA] != f[rB]) ? true : false;
+                break;
+            case 0xa:
+                // lf.sfgt.s
+                this.SR_F = (f[rA] > f[rB]) ? true : false;
+                break;
+            case 0xb:
+                // lf.sfge.s
+                this.SR_F = (f[rA] >= f[rB]) ? true : false;
+                break;
+            case 0xc:
+                // lf.sflt.s
+                this.SR_F = (f[rA] < f[rB]) ? true : false;
+                break;
+            case 0xd:
+                // lf.sfle.s
+                this.SR_F = (f[rA] <= f[rB]) ? true : false;
+                break;
+            default:
+                message.Debug("Error: lf. function " + utils.ToHex(ins & 0xFF) + " not supported yet");
+                message.Abort();
+                break;
+            }
+            break;
+
+        case 0x33:
+            // swa
+            imm = ((((ins >> 10) & 0xF800) | (ins & 0x7FF)) << 16) >> 16;
+            r[32] = r[(ins >> 16) & 0x1F] + imm;
+            if (r[32] & 0x3) {
+                message.Debug("Error in swa: no aligned memory access");
+                message.Abort();
+            }
+            r[33] = this.DTLBLookup(r[32], true);
+            if (r[33] == -1) {
+                break;
+            }
+            this.SR_F = (r[33] == this.EA)?true:false;
+            this.EA = -1;
+            if (this.SR_F == false) {
+                break;
+            }
+            if (r[33] > 0) {
+                int32mem[r[33] >> 2] = r[(ins >> 11) & 0x1F];
+            } else {
+                ram.Write32Big(r[33], r[(ins >> 11) & 0x1F]);
+            }
+            break;
+
+        case 0x35:
+            // sw
+            imm = ((((ins >> 10) & 0xF800) | (ins & 0x7FF)) << 16) >> 16;
+            r[32] = r[(ins >> 16) & 0x1F] + imm;
+            if (r[32] & 0x3) {
+                message.Debug("Error in sw: no aligned memory access");
+                message.Abort();
+            }
+            r[33] = this.DTLBLookup(r[32], true);
+            if (r[33] == -1) {
+                break;
+            }
+            if (r[33]>0) {
+                int32mem[r[33] >> 2] = r[(ins >> 11) & 0x1F];
+            } else {
+                ram.Write32Big(r[33], r[(ins >> 11) & 0x1F]);
+            }
+            break;
+
+
+        case 0x36:
+            // sb
+            imm = ((((ins >> 10) & 0xF800) | (ins & 0x7FF)) << 16) >> 16;
+            r[32] = r[(ins >> 16) & 0x1F] + imm;
+            r[33] = this.DTLBLookup(r[32], true);
+            if (r[33] == -1) {
+                break;
+            }
+            ram.Write8Big(r[33], r[(ins >> 11) & 0x1F]);
+            break;
+
+        case 0x37:
+            // sh
+            imm = ((((ins >> 10) & 0xF800) | (ins & 0x7FF)) << 16) >> 16;
+            r[32] = r[(ins >> 16) & 0x1F] + imm;
+            r[33] = this.DTLBLookup(r[32], true);
+            if (r[33] == -1) {
+                break;
+            }
+            ram.Write16Big(r[33], r[(ins >> 11) & 0x1F]);
+            break;
+
+        case 0x38:
+            // three operands commands
+            rA = r[(ins >> 16) & 0x1F];
+            rB = r[(ins >> 11) & 0x1F];
+            rindex = (ins >> 21) & 0x1F;
+            switch (ins & 0x3CF) {
+            case 0x0:
+                // add signed
+                r[rindex] = rA + rB;
+                this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+                break;
+            case 0x1:
+                // add with carry
+                r[rindex] = rA + rB + (this.SR_CY?1:0);
+                if (this.SR_CY) {
+                    this.SR_CY = (r[rindex]>>>0) <= (rA>>>0);
+                } else {
+                    this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+                }
+                break;
+            case 0x2:
+                // sub signed
+                r[rindex] = rA - rB;
+                this.SR_CY = ((rB>>>0) > (rA>>>0));
+                break;
+            case 0x3:
+                // and
+                r[rindex] = rA & rB;
+                break;
+            case 0x4:
+                // or
+                r[rindex] = rA | rB;
+                break;
+            case 0x5:
+                // or
+                r[rindex] = rA ^ rB;
+                break;
+            case 0x8:
+                // sll
+                r[rindex] = rA << (rB & 0x1F);
+                break;
+            case 0xc:
+                // exths
+                r[rindex] = (rA << 16) >> 16;
+                break;
+            case 0xe:
+                // cmov
+                r[rindex] = this.SR_F?rA:rB;
+                break;
+            case 0x48:
+                // srl not signed
+                r[rindex] = rA >>> (rB & 0x1F);
+                break;
+            case 0x4c:
+                // extbs
+                r[rindex] = (rA << 24) >> 24;
+                break;
+            case 0xf:
+                // ff1
+                r[rindex] = 0;
+                for (i = 0; i < 32; i++) {
+                    if (rA & (1 << i)) {
+                        r[rindex] = i + 1;
+                        break;
+                    }
+                }
+                break;
+            case 0x88:
+                // sra signed
+                r[rindex] = rA >> (rB & 0x1F);
+                break;
+            case 0x10f:
+                // fl1
+                r[rindex] = 0;
+                for (i = 31; i >= 0; i--) {
+                    if (rA & (1 << i)) {
+                        r[rindex] = i + 1;
+                        break;
+                    }
+                }
+                break;
+            case 0x306:
+                // mul signed (specification seems to be wrong)
+                {
+                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested.
+                    r[rindex] = (rA|0) * (rB|0);
+                    var rAl = rA & 0xFFFF;
+                    var rBl = rB & 0xFFFF;
+                    r[rindex] = r[rindex] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
+                }
+                break;
+            case 0x30a:
+                // divu (specification seems to be wrong)
+                this.SR_OV = rB == 0;
+                if (!this.SR_OV) {
+                    r[rindex] = (rA>>>0) / (rB>>>0);
+                }
+                break;
+            case 0x309:
+                // div (specification seems to be wrong)
+                this.SR_OV = rB == 0;
+                if (!this.SR_OV) {
+                    r[rindex] = rA / rB;
+                }
+                break;
+            default:
+                message.Debug("Error: op38 opcode not supported yet");
+                message.Abort();
+                break;
+            }
+            break;
+
+        case 0x39:
+            // sf....
+            switch ((ins >> 21) & 0x1F) {
+            case 0x0:
+                // sfeq
+                this.SR_F = (r[(ins >> 16) & 0x1F] == r[(ins >> 11) & 0x1F]) ? true : false;
+                break;
+            case 0x1:
+                // sfne
+                this.SR_F = (r[(ins >> 16) & 0x1F] != r[(ins >> 11) & 0x1F]) ? true : false;
+                break;
+            case 0x2:
+                // sfgtu
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) > (r[(ins >> 11) & 0x1F]>>>0)) ? true : false;
+                break;
+            case 0x3:
+                // sfgeu
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) >= (r[(ins >> 11) & 0x1F]>>>0)) ? true : false;
+                break;
+            case 0x4:
+                // sfltu
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) < (r[(ins >> 11) & 0x1F]>>>0)) ? true : false;
+                break;
+            case 0x5:
+                // sfleu
+                this.SR_F = ((r[(ins >> 16) & 0x1F]>>>0) <= (r[(ins >> 11) & 0x1F]>>>0)) ? true : false;
+                break;
+            case 0xa:
+                // sfgts
+                this.SR_F = (r[(ins >> 16) & 0x1F] > r[(ins >> 11) & 0x1F]) ? true : false;
+                break;
+            case 0xb:
+                // sfges
+                this.SR_F = (r[(ins >> 16) & 0x1F] >= r[(ins >> 11) & 0x1F]) ? true : false;
+                break;
+            case 0xc:
+                // sflts
+                this.SR_F = (r[(ins >> 16) & 0x1F] < r[(ins >> 11) & 0x1F]) ? true : false;
+                break;
+            case 0xd:
+                // sfles
+                this.SR_F = (r[(ins >> 16) & 0x1F] <= r[(ins >> 11) & 0x1F]) ? true : false;
+                break;
+            default:
+                message.Debug("Error: sf.... function supported yet");
+                message.Abort();
+            }
+            break;
+
+        default:
+            message.Debug("Error: Instruction with opcode " + utils.ToHex(ins >>> 26) + " not supported");
+            message.Abort();
+            break;
+        }
+        this.oldpc = this.pc|0;
+        this.pc = this.nextpc|0;
+        this.nextpc = this.nextpc + 1|0;
+        //this.delayedins = false;
+
+    }  // main loop
+    return 0;
+};
+
+module.exports = DynamicCPU;
+
+
+},{"../../messagehandler":33,"../../utils":48}],35:[function(require,module,exports){
 var message = require('../messagehandler');
 
 function FastCPU(stdlib, foreign, heap) {
@@ -6393,7 +8209,7 @@ var SR_DME = 0; // Data MMU Enabled
 var SR_IME = 0; // Instruction MMU Enabled
 var SR_LEE = 0; // Little Endian Enabled
 var SR_CE = 0; // CID Enabled ?
-var SR_F = 0; // Flag for l.sf... instructions 
+var SR_F = 0; // Flag for l.sf... instructions
 var SR_CY = 0; // Carry Flag
 var SR_OV = 0; // Overflow Flag
 var SR_OVE = 0; // Overflow Flag Exception
@@ -6401,7 +8217,7 @@ var SR_DSX = 0; // Delay Slot Exception
 var SR_EPH = 0; // Exception Prefix High
 var SR_FO = 1; // Fixed One, always set
 var SR_SUMRA = 0; // SPRS User Mode Read Access, or TRAP exception disable?
-var SR_CID = 0x0; //Context ID
+var SR_CID = 0x0; // Context ID
 
 var boot_dtlb_misshandler_address = 0x0;
 var boot_itlb_misshandler_address = 0x0;
@@ -6410,7 +8226,6 @@ var current_pgd = 0x0;
 var raise_interrupt = 0;
 
 var doze = 0x0;
-
 
 function Init() {
     AnalyzeImage();
@@ -6464,62 +8279,14 @@ function InvalidateTLB() {
     write16tlbcheck = -1;
 }
 
-
 function GetStat() {
     return (pc>>>2)|0;
 }
 
-function PutState() {
-    pc = h[(0x100 + 0) >> 2] << 2;
-    nextpc = h[(0x100 + 4) >> 2] << 2;
-    delayedins = h[(0x100 + 8) >> 2]|0;
-    TTMR = h[(0x100 + 16) >> 2]|0;
-    TTCR = h[(0x100 + 20) >> 2]|0;
-    PICMR = h[(0x100 + 24) >> 2]|0;
-    PICSR = h[(0x100 + 28) >> 2]|0;
-    boot_dtlb_misshandler_address = h[(0x100 + 32) >> 2]|0;
-    boot_itlb_misshandler_address = h[(0x100 + 36) >> 2]|0;
-    current_pgd = h[(0x100 + 40) >> 2]|0;
-
-    // we have to call the fence
-    ppc = 0x0;  
-    ppcorigin = 0x0; 
-    fence = 0x0;
-
-    if (delayedins|0) { 
-    }
-    nextpc = pc;    
-
-
-
-}
-
-function GetState() {
-    // pc is always valid when this function is called
-    h[(0x100 + 0) >> 2] = pc >>> 2;
-
-    h[(0x100 + 4) >> 2] = (pc+4) >>> 2;
-    if ((ppc|0) == (fence|0)) {
-        h[(0x100 + 4) >> 2] = nextpc >>> 2; 
-    }
-    h[(0x100 + 8) >> 2] = delayedins|0;
-    h[(0x100 + 12) >> 2] = 0;
-    h[(0x100 + 16) >> 2] = TTMR|0;
-    h[(0x100 + 20) >> 2] = TTCR|0;
-    h[(0x100 + 24) >> 2] = PICMR|0;
-    h[(0x100 + 28) >> 2] = PICSR|0;
-    h[(0x100 + 32) >> 2] = boot_dtlb_misshandler_address|0;
-    h[(0x100 + 36) >> 2] = boot_itlb_misshandler_address|0;
-    h[(0x100 + 40) >> 2] = current_pgd|0;
-}
-
 function GetTimeToNextInterrupt() {
     var delta = 0x0;
-    if ((TTMR >> 30) == 0) return -1;    
+    if ((TTMR >> 30) == 0) return -1;
     delta = (TTMR & 0xFFFFFFF) - (TTCR & 0xFFFFFFF) |0;
-    if ((delta|0) < 0) {
-        delta = delta + 0xFFFFFFF | 0;
-    }    
     return delta|0;
 }
 
@@ -6543,8 +8310,9 @@ function AnalyzeImage() { // get addresses for fast refill
 
 function SetFlags(x) {
     x = x|0;
-    var old_SR_IEE = 0;
-    old_SR_IEE = SR_IEE;
+
+    //if (((x&2) == 0) && SR_TEE) message.Debug('Disable Tee');
+
     SR_SM = (x & (1 << 0));
     SR_TEE = (x & (1 << 1));
     SR_IEE = (x & (1 << 2));
@@ -6580,11 +8348,6 @@ function SetFlags(x) {
         DebugMessage(ERROR_SETFLAGS_DELAY_SLOT|0);
         abort();
     }
-    if (SR_IEE) {
-        if ((old_SR_IEE|0) == (0|0)) {
-            CheckForInterrupt();
-        }
-    }
 }
 
 function GetFlags() {
@@ -6611,12 +8374,7 @@ function GetFlags() {
 }
 
 function CheckForInterrupt() {
-    if (!SR_IEE) {
-        return;
-    }
-    if (PICMR & PICSR) {
-        raise_interrupt = 1;
-    }
+    raise_interrupt = PICMR & PICSR;
 }
 
 function RaiseInterrupt(line, cpuid) {
@@ -6625,6 +8383,12 @@ function RaiseInterrupt(line, cpuid) {
     var lmask = 0;
     lmask = (1 << (line))|0;
     PICSR = PICSR | lmask;
+/*
+    message.Debug("raise " + line + " " + SR_TEE + " " + SR_IEE);
+    if (raise_interrupt|0) {
+        message.Debug('two interrupts ' + (PICSR|0) + ' ' + (raise_interrupt|0));
+    }
+*/
     CheckForInterrupt();
 }
 
@@ -6632,6 +8396,7 @@ function ClearInterrupt(line, cpuid) {
     line = line|0;
     cpuid = cpuid|0;
     PICSR = PICSR & (~(1 << line));
+    raise_interrupt = PICMR & PICSR;
 }
 
 
@@ -6672,8 +8437,9 @@ function SetSPR(idx, x) {
         case 0:
             PICMR = x | 0x3; // we use non maskable interrupt here
             // check immediate for interrupt
+            CheckForInterrupt();
             if (SR_IEE) {
-                if (PICMR & PICSR) {
+                if (raise_interrupt) {
                     DebugMessage(ERROR_SETSPR_DIRECT_INTERRUPT_EXCEPTION|0);
                     abort();
                 }
@@ -6839,6 +8605,7 @@ function Exception(excepttype, addr) {
         abort();
     }
     delayedins = 0;
+    delayedins_at_page_boundary = 0;
     SR_IME = 0;
 }
 
@@ -6856,7 +8623,7 @@ function DTLBRefill(addr, nsets) {
         return 0|0;
     }
     r2 = addr;
-    // get_current_PGD  using r3 and r5 
+    // get_current_PGD  using r3 and r5
     r3 = h[ramp+current_pgd >> 2]|0; // current pgd
     r4 = (r2 >>> 0x18) << 2;
     r5 = r4 + r3|0;
@@ -6981,7 +8748,7 @@ function ITLBRefill(addr, nsets) {
 
     //fill ITLBMR register
     r2 = addr;
-    // r3 = 
+    // r3 =
     r4 = r2 & 0xFFFFE000;
     r4 = r4 | 0x1;
     h[group2p + ((0x200 | r5)<<2) >> 2] = r4; // SPR_DTLBMR_BASE(0)|r5 = r4  // SPR_DTLBMR_BASE = 0x200 * (WAY*0x100)
@@ -7003,7 +8770,7 @@ function DTLBLookup(addr, write) {
 
     setindex = (addr >> 13) & 63; // check these values
     tlmbr = h[group1p + ((0x200 | setindex) << 2) >> 2]|0; // match register
-     
+
     if ((tlmbr & 1) == 0) {
         // use tlb refill to fasten up
         if (DTLBRefill(addr, 64)|0) {
@@ -7028,7 +8795,7 @@ function DTLBLookup(addr, write) {
     }
 
     /* skipped this check
-        // set lru 
+        // set lru
         if (tlmbr & 0xC0) {
             DebugMessage("Error: LRU ist not supported");
             abort();
@@ -7083,14 +8850,15 @@ function Step(steps, clockspeed) {
         rD = 0x0;
     var vaddr = 0x0; // virtual address
     var paddr = 0x0; // physical address
-    
+
     // to get the instruction
     var setindex = 0x0;
     var tlmbr = 0x0;
     var tlbtr = 0x0;
     var delta = 0x0;
 
-    var dsteps = 0; // small counter
+    var dsteps = -1; // small counter
+    //fence = ppc|0;
 
 // -----------------------------------------------------
 
@@ -7134,7 +8902,7 @@ function Step(steps, clockspeed) {
         case 0x3:
             // bnf
             if (SR_F) {
-                break;
+                continue;
             }
             pc = pcbase + ppc|0;
             jump = pc + ((ins << 6) >> 4)|0;
@@ -7219,7 +8987,7 @@ function Step(steps, clockspeed) {
             delayedins = 1;
             continue;
 
-        case 0x1B: 
+        case 0x1B:
             // lwa
             vaddr = (r[((ins >> 14) & 0x7C) >> 2]|0) + ((ins << 16) >> 16)|0;
             if ((read32tlbcheck ^ vaddr) >> 13) {
@@ -7270,7 +9038,7 @@ function Step(steps, clockspeed) {
             continue;
 
         case 0x24:
-            // lbs 
+            // lbs
             vaddr = (r[((ins >> 14) & 0x7C)>>2]|0) + ((ins << 16) >> 16)|0;
             if ((read8stlbcheck ^ vaddr) >> 13) {
                 paddr = DTLBLookup(vaddr, 0)|0;
@@ -7289,7 +9057,7 @@ function Step(steps, clockspeed) {
             continue;
 
         case 0x25:
-            // lhz 
+            // lhz
             vaddr = (r[((ins >> 14) & 0x7C)>>2]|0) + ((ins << 16) >> 16)|0;
             if ((read16utlbcheck ^ vaddr) >> 13) {
                 paddr = DTLBLookup(vaddr, 0)|0;
@@ -7327,14 +9095,23 @@ function Step(steps, clockspeed) {
             continue;
 
         case 0x27:
-            // addi signed 
+            // addi signed
             rA = r[((ins >> 14) & 0x7C)>>2]|0;
-            r[((ins >> 19) & 0x7C) >> 2] = rA + ((ins << 16) >> 16)|0;
-            //rindex = ((ins >> 19) & 0x7C);
-            //SR_CY = r[rindex] < rA;
-            //SR_OV = (((rA ^ imm ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
-            //TODO overflow and carry
-            // maybe wrong
+            rindex = (ins >> 19) & 0x7C;
+            r[rindex >> 2] = rA + ((ins << 16) >> 16)|0;
+            SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
+            continue;
+
+        case 0x28:
+            // addi with carry
+            rA = r[((ins >> 14) & 0x7C)>>2]|0;
+            rindex = (ins >> 19) & 0x7C;
+            r[rindex >> 2] = (rA + ((ins << 16) >> 16)|0) + (SR_CY?1:0)|0;
+            if (SR_CY) {
+                SR_CY = (r[rindex>>2]>>>0) <= (rA>>>0);
+            } else {
+                SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
+            }
             continue;
 
         case 0x29:
@@ -7342,17 +9119,22 @@ function Step(steps, clockspeed) {
             r[((ins >> 19) & 0x7C)>>2] = r[((ins >> 14) & 0x7C)>>2] & (ins & 0xFFFF);
             continue;
 
-
         case 0x2A:
             // ori
             r[((ins >> 19) & 0x7C)>>2] = r[((ins >> 14) & 0x7C)>>2] | (ins & 0xFFFF);
             continue;
 
         case 0x2B:
-            // xori            
+            // xori
             rA = r[((ins >> 14) & 0x7C)>>2]|0;
             r[((ins >> 19) & 0x7C)>>2] = rA ^ ((ins << 16) >> 16);
             continue;
+
+        case 0x2C:
+            // muli
+            rA = r[((ins >> 14) & 0x7C)>>2]|0;
+            r[((ins >> 19) & 0x7C)>>2] = imul(rA|0, (ins << 16) >> 16)|0;
+            break;
 
         case 0x2D:
             // mfspr
@@ -7438,12 +9220,31 @@ function Step(steps, clockspeed) {
             imm = (ins & 0x7FF) | ((ins >> 10) & 0xF800);
             //pc = pcbase + ppc|0;
             SetSPR(r[((ins >> 14) & 0x7C)>>2] | imm, r[((ins >> 9) & 0x7C)>>2]|0); // can raise an interrupt
-            if (doze) { // doze
+
+            if (doze|0) { // doze
                 doze = 0x0;
+                //message.Debug('Doze ' + raise_interrupt);
+
+                if (TTMR & (1 << 28))
+                if (SR_TEE|0) {
+                    Exception(EXCEPT_TICK, h[group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
+                    continue;
+                }
+
+                if (SR_IEE|0)
+                if (raise_interrupt|0) {
+                    Exception(EXCEPT_INT, h[group0p + (SPR_EEAR_BASE<<2)>>2]|0);
+                    continue;
+                }
+
+                return steps|0;
+/*
                 if ((raise_interrupt|0) == 0)
-                if (!(TTMR & (1 << 28))) {
+                if ((TTMR & (1 << 28)) == 0) {
                     return steps|0;
                 }
+*/
+
             }
             continue;
 
@@ -7605,19 +9406,27 @@ function Step(steps, clockspeed) {
             rB = r[((ins >> 9) & 0x7C)>>2]|0;
             rindex = (ins >> 19) & 0x7C;
             switch (ins & 0x3CF) {
+
             case 0x0:
-                // add signed 
-                r[rindex>>2] = rA + rB;
-                //SR_CY = r[rindex] < rA;
-                //SR_OV = (((rA ^ rB ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
-                //TODO overflow and carry
+                // add
+                r[rindex>>2] = rA + rB|0;
+                SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
                 continue;
+
+            case 0x1:
+                // add with carry
+                r[rindex>>2] = (rA + rB|0) + (SR_CY?1:0)|0;
+                if (SR_CY) {
+                    SR_CY = (r[rindex>>2]>>>0) <= (rA>>>0);
+                } else {
+                    SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
+                }
+                continue;
+
             case 0x2:
                 // sub signed
-                r[rindex>>2] = rA - rB;
-                //TODO overflow and carry
-                //SR_CY = (rB > rA);
-                //SR_OV = (((rA ^ rB) & (rA ^ r[rindex])) & 0x80000000)?true:false;                
+                r[rindex>>2] = rA - rB|0;
+                SR_CY = (rB>>>0) > (rA>>>0);
                 continue;
             case 0x3:
                 // and
@@ -7634,10 +9443,22 @@ function Step(steps, clockspeed) {
             case 0x8:
                 // sll
                 r[rindex>>2] = rA << (rB & 0x1F);
-                break;
+                continue;
+            case 0xc:
+                // exths
+                r[rindex>>2] = (rA << 16) >> 16;
+                continue;
+            case 0xe:
+                // cmov
+                r[rindex>>2] = (SR_F?rA:rB)|0;
+                continue;
             case 0x48:
                 // srl not signed
                 r[rindex>>2] = rA >>> (rB & 0x1F);
+                continue;
+            case 0x4c:
+                // extbs
+                r[rindex>>2] = (rA << 24) >> 24;
                 continue;
             case 0xf:
                 // ff1
@@ -7671,18 +9492,16 @@ function Step(steps, clockspeed) {
 
             case 0x30a:
                 // divu (specification seems to be wrong)
-                SR_CY = (rB|0) == 0;
-                SR_OV = 0;
-                if (!SR_CY) {
-                    r[rindex>>2] = /*Math.floor*/((rA>>>0) / (rB>>>0));
+                SR_OV = (rB|0) == 0;
+                if (!SR_OV) {
+                    r[rindex>>2] = (rA>>>0) / (rB>>>0);
                 }
                 continue;
 
             case 0x309:
                 // div (specification seems to be wrong)
-                SR_CY = (rB|0) == 0;
-                SR_OV = 0;
-                if (!SR_CY) {
+                SR_OV = (rB|0) == 0;
+                if (!SR_OV) {
                     r[rindex>>2] = (rA|0) / (rB|0);
                 }
                 continue;
@@ -7756,17 +9575,17 @@ function Step(steps, clockspeed) {
 
             pc = nextpc;
 
-            if ((!delayedins_at_page_boundary|0)) {
+            if (!(delayedins_at_page_boundary|0)) {
                 delayedins = 0;
-            } 
+            }
 
-            dsteps = dsteps + ((ppc - ppcorigin) >> 2)|0;
+            dsteps = dsteps - ((ppc - ppcorigin) >> 2)|0;
 
             // do this not so often
-            if ((dsteps|0) >= 64)
+            if ((dsteps|0) < 0)
             if (!(delayedins_at_page_boundary|0)) { // for now. Not sure if we need this
 
-                dsteps = dsteps - 64|0;
+                dsteps = dsteps + 64|0;
                 steps = steps - 64|0;
                 if ((steps|0) < 0) return 0x0; // return to main loop
 
@@ -7774,11 +9593,9 @@ function Step(steps, clockspeed) {
                 // timer enabled
                 if ((TTMR >> 30) != 0) {
                     delta = (TTMR & 0xFFFFFFF) - (TTCR & 0xFFFFFFF) |0;
-                    if ((delta|0) < 0) {
-                        delta = delta + 0xFFFFFFF | 0;
-                    }
-                    TTCR = (TTCR + clockspeed|0);
-                    if ((delta|0) < (clockspeed|0)) {
+                    //if (delta < 0) message.Debug("" + (TTCR & 0xFFFFFFF) + " " + SR_TEE + " " + (TTMR & 0xFFFFFFF) + " " + (TTMR >> 28));
+                    TTCR = TTCR + clockspeed | 0;
+                    if ((delta|0) <= (clockspeed|0)) {
                         // if interrupt enabled
                         if (TTMR & (1 << 29)) {
                             TTMR = TTMR | (1 << 28); // set pending interrupt
@@ -7788,19 +9605,20 @@ function Step(steps, clockspeed) {
 
                 // check if pending and check if interrupt must be triggered
                 if (TTMR & (1 << 28)) {
-                    if (SR_TEE) {
+                    if (SR_TEE|0) {
                         Exception(EXCEPT_TICK, h[group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
                         // treat exception directly here
                         pc = nextpc;
                     }
-                } else
-                if (SR_IEE|0) 
-                if (raise_interrupt|0) {
-                    raise_interrupt = 0;
-                    Exception(EXCEPT_INT, h[group0p + (SPR_EEAR_BASE<<2)>>2]|0);
-                    pc = nextpc;
                 }
+
             } // dsteps
+
+            if (SR_IEE|0)
+            if (raise_interrupt|0) {
+                Exception(EXCEPT_INT, h[group0p + (SPR_EEAR_BASE<<2)>>2]|0);
+                pc = nextpc;
+            }
 
             // Get Instruction Fast version
             if ((instlbcheck ^ pc) & 0xFFFFE000) // short check if it is still the correct page
@@ -7838,7 +9656,6 @@ function Step(steps, clockspeed) {
             }
 
             // set pc and set the correcponding physical pc pointer
-            //pc = pc;
             ppc = ramp + (instlblookup ^ pc)|0;
             ppcorigin = ppc;
             pcbase = pc - 4 - ppcorigin|0;
@@ -7866,8 +9683,6 @@ return {
     Step: Step,
     GetFlags: GetFlags,
     SetFlags: SetFlags,
-    PutState: PutState,
-    GetState: GetState,    
     GetTimeToNextInterrupt: GetTimeToNextInterrupt,
     ProgressTime: ProgressTime,
     GetTicks: GetTicks,
@@ -7881,7 +9696,7 @@ return {
 
 module.exports = FastCPU;
 
-},{"../messagehandler":28}],30:[function(require,module,exports){
+},{"../messagehandler":33}],36:[function(require,module,exports){
 /* this is a unified, abstract interface (a facade) to the different
  * CPU implementations
  */
@@ -7895,9 +9710,10 @@ var imul = require('../imul');
 var FastCPU = require('./fastcpu');
 var SafeCPU = require('./safecpu');
 var SMPCPU = require('./smpcpu');
+var DynamicCPU = require('./dynamic/dynamiccpu');
 
 // The asm.js ("Fast") and SMP cores must be singletons
-//  because of Firefox limitations.
+// because of Firefox limitations.
 var fastcpu = null;
 var smpcpu = null;
 
@@ -7942,6 +9758,9 @@ function createCPU(cpuname, ram, heap, ncores) {
     if (cpuname === "safe") {
         return new SafeCPU(ram);
     }
+    if (cpuname === "dynamic") {
+        return new DynamicCPU(ram);
+    }
     if (cpuname === "asm") {
         cpu = createCPUSingleton(cpuname, ram, heap, ncores);
         cpu.Init();
@@ -7965,58 +9784,6 @@ function CPU(cpuname, ram, heap, ncores) {
 
     return this;
 }
-
-CPU.prototype.switchImplementation = function(cpuname) {
-    var oldcpu = this.cpu;
-    var oldcpuname = this.name;
-    if (oldcpuname == "smp") return;
-
-    this.cpu = createCPU(cpuname, this.ram, this.heap, this.ncores);
-
-    this.cpu.InvalidateTLB(); // reset TLB
-    var f = oldcpu.GetFlags();
-    this.cpu.SetFlags(f|0);
-    var h;
-    if (oldcpuname === "asm") {
-        h = new Int32Array(this.heap);
-        oldcpu.GetState();
-        this.cpu.pc = h[(0x40 + 0)];
-        this.cpu.nextpc = h[(0x40 + 1)];
-        this.cpu.delayedins = h[(0x40 + 2)]?true:false;
-        this.cpu.TTMR = h[(0x40 + 4)];
-        this.cpu.TTCR = h[(0x40 + 5)];
-        this.cpu.PICMR = h[(0x40 + 6)];
-        this.cpu.PICSR = h[(0x40 + 7)];
-        this.cpu.boot_dtlb_misshandler_address = h[(0x40 + 8)];
-        this.cpu.boot_itlb_misshandler_address = h[(0x40 + 9)];
-        this.cpu.current_pgd = h[(0x40 + 10)];
-    } else if (cpuname === "asm") {
-        h = new Int32Array(this.heap);
-        h[(0x40 + 0)] = oldcpu.pc;
-        h[(0x40 + 1)] = oldcpu.nextpc;
-        h[(0x40 + 2)] = oldcpu.delayedins;
-        h[(0x40 + 3)] = 0x0;
-        h[(0x40 + 4)] = oldcpu.TTMR;
-        h[(0x40 + 5)] = oldcpu.TTCR;
-        h[(0x40 + 6)] = oldcpu.PICMR;
-        h[(0x40 + 7)] = oldcpu.PICSR;
-        h[(0x40 + 8)] = oldcpu.boot_dtlb_misshandler_address;
-        h[(0x40 + 9)] = oldcpu.boot_itlb_misshandler_address;
-        h[(0x40 + 10)] = oldcpu.current_pgd;
-        this.cpu.PutState();
-    } else {
-        this.cpu.pc = oldcpu.pc;
-        this.cpu.nextpc = oldcpu.nextpc;
-        this.cpu.delayedins = oldcpu.delayedins;
-        this.cpu.TTMR = oldcpu.TTMR;
-        this.cpu.TTCR = oldcpu.TTCR;
-        this.cpu.PICMR = oldcpu.PICMR;
-        this.cpu.PICSR = oldcpu.PICSR;
-        this.cpu.boot_dtlb_misshandler_address = oldcpu.boot_dtlb_misshandler_address;
-        this.cpu.boot_itlb_misshandler_address = oldcpu.itlb_misshandler_address;
-        this.cpu.current_pgd = oldcpu.current_pgd;
-    }
-};
 
 CPU.prototype.toString = function() {
     var r = new Uint32Array(this.heap);
@@ -8088,15 +9855,17 @@ var forwardedMethods = [
     "GetTimeToNextInterrupt",
     "ProgressTime", 
     "ClearInterrupt"];
+
 forwardedMethods.forEach(function(m) {
     CPU.prototype[m] = function() {
         return this.cpu[m].apply(this.cpu, arguments);        
     };
+
 });
 
 module.exports = CPU;
 
-},{"../imul":27,"../messagehandler":28,"../utils":43,"./fastcpu":29,"./safecpu":31,"./smpcpu":32}],31:[function(require,module,exports){
+},{"../imul":30,"../messagehandler":33,"../utils":48,"./dynamic/dynamiccpu":34,"./fastcpu":35,"./safecpu":37,"./smpcpu":38}],37:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- CPU ------------------------
 // -------------------------------------------------
@@ -8175,7 +9944,7 @@ function SafeCPU(ram) {
     this.SR_IME = false; // Instruction MMU Enabled
     this.SR_LEE = false; // Little Endian Enabled
     this.SR_CE = false; // CID Enabled ?
-    this.SR_F = false; // Flag for l.sf... instructions 
+    this.SR_F = false; // Flag for l.sf... instructions
     this.SR_CY = false; // Carry Flag
     this.SR_OV = false; // Overflow Flag
     this.SR_OVE = false; // Overflow Flag Exception
@@ -8184,7 +9953,7 @@ function SafeCPU(ram) {
     this.SR_FO = true; // Fixed One, always set
     this.SR_SUMRA = false; // SPRS User Mode Read Access, or TRAP exception disable?
     this.SR_CID = 0x0; //Context ID
-    
+
     this.Reset();
 }
 
@@ -8219,7 +9988,6 @@ SafeCPU.prototype.GetTimeToNextInterrupt = function () {
 
     if ((this.TTMR >> 30) == 0) return -1;
     var delta = (this.TTMR & 0xFFFFFFF) - (this.TTCR & 0xFFFFFFF);
-    delta += delta<0?0xFFFFFFF:0x0;
     return delta;
 }
 
@@ -8238,7 +10006,6 @@ SafeCPU.prototype.AnalyzeImage = function() // we haveto define these to copy th
     this.boot_dtlb_misshandler_address = 0x0;
     this.boot_itlb_misshandler_address = 0x0;
     this.current_pgd = 0x0;
-
 }
 
 SafeCPU.prototype.SetFlags = function (x) {
@@ -8318,8 +10085,7 @@ SafeCPU.prototype.CheckForInterrupt = function () {
 };
 
 SafeCPU.prototype.RaiseInterrupt = function (line, cpuid) {
-    var lmask = 1 << line;
-    this.PICSR |= lmask;
+    this.PICSR |= 1 << line;
     this.CheckForInterrupt();
 };
 
@@ -8520,7 +10286,7 @@ SafeCPU.prototype.DTLBLookup = function (addr, write) {
             message.Debug("Error: LRU ist not supported");
             message.Abort();
         }
-    
+
     var tlbtr = this.group1[0x280 | setindex]; // translate register
 
     // check if supervisor mode
@@ -8552,7 +10318,7 @@ SafeCPU.prototype.GetInstruction = function (addr) {
     // pagesize is 8192 bytes
     // nways are 1
     // nsets are 64
-    
+
     var setindex = (addr >> 13) & 63;
     setindex &= 63; // number of sets
     var tlmbr = this.group2[0x200 | setindex];
@@ -8610,7 +10376,6 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
     var jump = 0x0;
     var delta = 0x0;
 
-   
     do {
         this.clock++;
 
@@ -8620,7 +10385,6 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             // timer enabled
             if ((this.TTMR >> 30) != 0) {
                 delta = (this.TTMR & 0xFFFFFFF) - (this.TTCR & 0xFFFFFFF);
-                delta += delta<0?0xFFFFFFF:0x0;
                 this.TTCR = (this.TTCR + clockspeed) & 0xFFFFFFFF;
                 if (delta < clockspeed) {
                     // if interrupt enabled
@@ -8636,7 +10400,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 this.pc = this.nextpc++;
             }
         }
-        
+
         ins = this.GetInstruction(this.pc<<2)
         if (ins == -1) {
             this.pc = this.nextpc++;
@@ -8671,6 +10435,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             this.nextpc = jump;
             this.delayedins = true;
             continue;
+
         case 0x4:
             // bf
             if (!this.SR_F) {
@@ -8681,9 +10446,11 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             this.nextpc = jump;
             this.delayedins = true;
             continue;
+
         case 0x5:
             // nop
             break;
+
         case 0x6:
             // movhi or macrc
             rindex = (ins >> 21) & 0x1F;
@@ -8721,6 +10488,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             this.nextpc = jump;
             this.delayedins = true;
             continue;
+
         case 0x12:
             // jalr
             jump = r[(ins >> 11) & 0x1F]>>2;
@@ -8744,7 +10512,6 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             this.EA = r[33];
             r[(ins >> 21) & 0x1F] = r[33]>0?ram.int32mem[r[33] >> 2]:ram.Read32Big(r[33]);
             break;
-
 
         case 0x21:
             // lwz
@@ -8781,7 +10548,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             break;
 
         case 0x25:
-            // lhz 
+            // lhz
             r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
             r[33] = this.DTLBLookup(r[32], false);
             if (r[33] == -1) {
@@ -8801,15 +10568,29 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             break;
 
         case 0x27:
-            // addi signed 
+            // addi signed
             imm = (ins << 16) >> 16;
             rA = r[(ins >> 16) & 0x1F];
             rindex = (ins >> 21) & 0x1F;
             r[rindex] = rA + imm;
-            this.SR_CY = r[rindex] < rA;
-            this.SR_OV = (((rA ^ imm ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
+            this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+            //this.SR_OV = (((rA ^ imm ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
             //TODO overflow and carry
-            // maybe wrong
+            break;
+
+        case 0x28:
+            // addi signed with carry
+            imm = (ins << 16) >> 16;
+            rA = r[(ins >> 16) & 0x1F];
+            rindex = (ins >> 21) & 0x1F;
+            r[rindex] = rA + imm + (this.SR_CY?1:0);
+            if (this.SR_CY) {
+                this.SR_CY = (r[rindex]>>>0) <= (rA>>>0);
+            } else {
+                this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+            }
+            //this.SR_OV = (((rA ^ imm ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
+            //TODO overflow and carry
             break;
 
         case 0x29:
@@ -8817,16 +10598,28 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] & (ins & 0xFFFF);
             break;
 
-
         case 0x2A:
             // ori
             r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] | (ins & 0xFFFF);
             break;
 
         case 0x2B:
-            // xori            
+            // xori
             rA = r[(ins >> 16) & 0x1F];
             r[(ins >> 21) & 0x1F] = rA ^ ((ins << 16) >> 16);
+            break;
+
+        case 0x2C:
+            // muli
+            {
+            rindex = (ins >> 21) & 0x1F;
+            rA = r[(ins >> 16) & 0x1F];
+            r[rindex] = (rA * ((ins << 16) >> 16))&0xFFFFFFFF;
+            var rAl = rA & 0xFFFF;
+            var rBl = ins & 0xFFFF;
+            r[rindex] = r[rindex] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
+            }
+            // TODO set overflow flag
             break;
 
         case 0x2D:
@@ -9002,7 +10795,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 ram.Write32Big(r[33], r[(ins >> 11) & 0x1F]);
             }
             break;
-            
+
         case 0x35:
             // sw
             imm = ((((ins >> 10) & 0xF800) | (ins & 0x7FF)) << 16) >> 16;
@@ -9052,19 +10845,33 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             rindex = (ins >> 21) & 0x1F;
             switch (ins & 0x3CF) {
             case 0x0:
-                // add signed 
+                // add
                 r[rindex] = rA + rB;
-                this.SR_CY = r[rindex] < rA;
-                this.SR_OV = (((rA ^ rB ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
+                this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+                //this.SR_OV = (((rA ^ rB ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
                 //TODO overflow and carry
                 break;
+
+            case 0x1:
+                // add with carry
+                r[rindex] = rA + rB + (this.SR_CY?1:0);
+                if (this.SR_CY) {
+                    this.SR_CY = (r[rindex]>>>0) <= (rA>>>0);
+                } else {
+                    this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+                }
+                //this.SR_OV = (((rA ^ rB ^ -1) & (rA ^ r[rindex])) & 0x80000000)?true:false;
+                //TODO overflow and carry
+                break;
+
             case 0x2:
                 // sub signed
                 r[rindex] = rA - rB;
                 //TODO overflow and carry
-                this.SR_CY = (rB > rA);
-                this.SR_OV = (((rA ^ rB) & (rA ^ r[rindex])) & 0x80000000)?true:false;                
+                this.SR_CY = ((rB>>>0) > (rA>>>0));
+                //this.SR_OV = (((rA ^ rB) & (rA ^ r[rindex])) & 0x80000000)?true:false;
                 break;
+
             case 0x3:
                 // and
                 r[rindex] = rA & rB;
@@ -9081,9 +10888,13 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 // sll
                 r[rindex] = rA << (rB & 0x1F);
                 break;
-            case 0x48:
-                // srl not signed
-                r[rindex] = rA >>> (rB & 0x1F);
+            case 0xc:
+                // exths
+                r[rindex] = (rA << 16) >> 16;
+                break;
+            case 0xe:
+                // cmov
+                r[rindex] = this.SR_F?rA:rB;
                 break;
             case 0xf:
                 // ff1
@@ -9094,6 +10905,14 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                         break;
                     }
                 }
+                break;
+            case 0x48:
+                // srl not signed
+                r[rindex] = rA >>> (rB & 0x1F);
+                break;
+            case 0x4c:
+                // extbs
+                r[rindex] = (rA << 24) >> 24;
                 break;
             case 0x88:
                 // sra signed
@@ -9112,33 +10931,30 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             case 0x306:
                 // mul signed (specification seems to be wrong)
                 {
-                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested. 
+                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested.
                     r[rindex] = utils.int32(rA >> 0) * utils.int32(rB);
                     var rAl = rA & 0xFFFF;
                     var rBl = rB & 0xFFFF;
                     r[rindex] = r[rindex] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
-                    var result = Number(utils.int32(rA)) * Number(utils.int32(rB));
-                    this.SR_OV = (result < (-2147483647 - 1)) || (result > (2147483647));
-                    var uresult = utils.uint32(rA) * utils.uint32(rB);
-                    this.SR_CY = (uresult > (4294967295));
+                    //var result = Number(utils.int32(rA)) * Number(utils.int32(rB));
+                    //this.SR_OV = (result < (-2147483647 - 1)) || (result > (2147483647));
+                    //var uresult = utils.uint32(rA) * utils.uint32(rB);
+                    //this.SR_CY = (uresult > (4294967295));
                 }
                 break;
             case 0x30a:
                 // divu (specification seems to be wrong)
-                this.SR_CY = rB == 0;
-                this.SR_OV = false;
-                if (!this.SR_CY) {
-                    r[rindex] = /*Math.floor*/((rA>>>0) / (rB>>>0));
+                this.SR_OV = rB == 0;
+                if (!this.SR_OV) {
+                    r[rindex] = (rA>>>0) / (rB>>>0);
                 }
                 break;
             case 0x309:
                 // div (specification seems to be wrong)
-                this.SR_CY = rB == 0;
-                this.SR_OV = false;
-                if (!this.SR_CY) {
+                this.SR_OV = rB == 0;
+                if (!this.SR_OV) {
                     r[rindex] = rA / rB;
                 }
-
                 break;
             default:
                 message.Debug("Error: op38 opcode not supported yet");
@@ -9212,7 +11028,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
 
 module.exports = SafeCPU;
 
-},{"../messagehandler":28,"../utils":43}],32:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],38:[function(require,module,exports){
 var message = require('../messagehandler');
 
 function SMPCPU(stdlib, foreign, heap) {
@@ -9347,7 +11163,7 @@ var SR_DME = 0; // Data MMU Enabled
 var SR_IME = 0; // Instruction MMU Enabled
 var SR_LEE = 0; // Little Endian Enabled
 var SR_CE = 0; // CID Enabled ?
-var SR_F = 0; // Flag for l.sf... instructions 
+var SR_F = 0; // Flag for l.sf... instructions
 var SR_CY = 0; // Carry Flag
 var SR_OV = 0; // Overflow Flag
 var SR_OVE = 0; // Overflow Flag Exception
@@ -9366,8 +11182,8 @@ var snoopbitfield = 0x0; // fot atomic instructions
 function Init(_ncores) {
     _ncores = _ncores|0;
     ncores = _ncores|0;
-    if ((ncores|0) == 32) 
-        ncoresmask = 0xFFFFFFFF; 
+    if ((ncores|0) == 32)
+        ncoresmask = 0xFFFFFFFF;
     else
         ncoresmask =  (1 << ncores)-1|0;
     AnalyzeImage();
@@ -9524,14 +11340,6 @@ function InvalidateTLB() {
 
 // ------------------------------------------
 
-// SMP cpus cannot be switched.
-function PutState() {
-}
-
-function GetState() {
-}
-
-// ------------------------------------------
 // Timer functions
 
 function TimerSetInterruptFlag(coreid) {
@@ -9553,7 +11361,6 @@ function TimerGetTicksToNextInterrupt(coreid) {
     coreid = coreid|0;
     var delta = 0;
     delta = (h[(coreid<<15) + TTMRp >>2] & 0xFFFFFFF) - (h[TTCRp >>2] & 0xFFFFFFF) |0;
-    if ((delta|0) < 0) delta = delta + 0xFFFFFFF | 0;
     return delta|0;
 }
 
@@ -10103,7 +11910,7 @@ function DTLBLookup(addr, write) {
 
     setindex = (addr >> 13) & 63; // check these values
     tlmbr = h[corep + group1p + ((0x200 | setindex) << 2) >> 2]|0; // match register
-     
+
     if ((tlmbr & 1) == 0) {
         // use tlb refill to fasten up
         if (DTLBRefill(addr, 64)|0) {
@@ -10232,19 +12039,18 @@ function Step(steps, clockspeed) {
             // check for any interrupts
             // SR_TEE is set or cleared at the same time as SR_IEE in Linux, so skip this check
             if (SR_IEE|0) {
-                if (h[corep + TTMRp >> 2] & (1 << 28)) {
-                    Exception(EXCEPT_TICK, h[corep + group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
-                    // treat exception directly here
-                    pc = nextpc;
-                } else
                 if (h[corep + raise_interruptp >> 2]|0) {
                     h[corep + raise_interruptp >> 2] = 0;
                     Exception(EXCEPT_INT, h[corep + group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
                     // treat exception directly here
                     pc = nextpc;
+                } else
+                if (h[corep + TTMRp >> 2] & (1 << 28)) {
+                    Exception(EXCEPT_TICK, h[corep + group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
+                    // treat exception directly here
+                    pc = nextpc;
                 }
             }
- //     }
 
             // Get instruction pointer
             if ((instlbcheck ^ pc) & 0xFFFFE000) // short check if it is still the correct page
@@ -10534,17 +12340,26 @@ function Step(steps, clockspeed) {
             }
             break;
 
-
         case 0x27:
-            // addi signed 
+            // addi signed
             imm = (ins << 16) >> 16;
             rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
-            r[corep + ((ins >> 19) & 0x7C) >> 2] = rA + imm|0;
-            //rindex = ((ins >> 19) & 0x7C);
-            //SR_CY = r[corep + rindex] < rA;
-            //SR_OV = (((rA ^ imm ^ -1) & (rA ^ r[corep + rindex])) & 0x80000000)?true:false;
-            //TODO overflow and carry
-            // maybe wrong
+            rindex = corep + ((ins >> 19) & 0x7C)|0;
+            r[rindex >> 2] = rA + imm|0;
+            SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
+            break;
+
+        case 0x28:
+            // addi signed with carry
+            imm = (ins << 16) >> 16;
+            rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
+            rindex = corep + ((ins >> 19) & 0x7C)|0;
+            r[rindex >> 2] = (rA + imm|0) + (SR_CY?1:0)|0;
+            if (SR_CY|0) {
+                SR_CY = (r[rindex>>2]>>>0) <= (rA>>>0);
+            } else {
+                SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
+            }
             break;
 
         case 0x29:
@@ -10559,9 +12374,15 @@ function Step(steps, clockspeed) {
             break;
 
         case 0x2B:
-            // xori            
+            // xori
             rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
             r[corep + ((ins >> 19) & 0x7C)>>2] = rA ^ ((ins << 16) >> 16);
+            break;
+
+        case 0x2C:
+            // muli
+            rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
+            r[corep + ((ins >> 19) & 0x7C)>>2] = imul(rA|0, (ins << 16) >> 16)|0;
             break;
 
         case 0x2D:
@@ -10850,13 +12671,23 @@ function Step(steps, clockspeed) {
             rindex = (ins >> 19) & 0x7C;
             switch (ins & 0x3CF) {
             case 0x0:
-                // add signed 
-                r[corep + rindex>>2] = rA + rB;
+                // add
+                r[corep + rindex>>2] = rA + rB|0;
+                SR_CY = (r[corep + rindex>>2]>>>0) < (rA>>>0);
+                break;
+            case 0x1:
+                // add with carry
+                r[corep + rindex>>2] = (rA + rB|0) + (SR_CY?1:0)|0;
+                if (SR_CY|0) {
+                    SR_CY = (r[corep + rindex>>2]>>>0) <= (rA>>>0);
+                } else {
+                    SR_CY = (r[corep + rindex>>2]>>>0) < (rA>>>0);
+                }
                 break;
             case 0x2:
                 // sub signed
                 r[corep + rindex>>2] = rA - rB;
-                //TODO overflow and carry
+                SR_CY = (rB>>>0) > (rA>>>0);
                 break;
             case 0x3:
                 // and
@@ -10874,9 +12705,21 @@ function Step(steps, clockspeed) {
                 // sll
                 r[corep + rindex>>2] = rA << (rB & 0x1F);
                 break;
+            case 0xc:
+                // exths
+                r[corep + rindex>>2] = (rA << 16) >> 16;
+                continue;
+            case 0xe:
+                // cmov
+                r[corep + rindex>>2] = SR_F?rA:rB;
+                break;
             case 0x48:
                 // srl not signed
                 r[corep + rindex>>2] = rA >>> (rB & 0x1F);
+                break;
+            case 0x4c:
+                // extbs
+                r[corep + rindex>>2] = (rA << 24) >> 24;
                 break;
             case 0xf:
                 // ff1
@@ -10905,38 +12748,24 @@ function Step(steps, clockspeed) {
                 break;
             case 0x306:
                 // mul signed (specification seems to be wrong)
-                {                    
-                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested. 
-                    //r[corep + (rindex<<2)>>2] = (rA >> 0) * (rB >> 0);
+                {
+                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested.
                     r[corep + rindex>>2] = imul(rA|0, rB|0)|0;
-                    /*
-                    var rAl = rA & 0xFFFF;
-                    var rBl = rB & 0xFFFF;
-                    r[corep + rindex<<2>>2] = r[corep + rindex<<2>>2] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
-                    var result = Number(int32(rA)) * Number(int32(rB));
-                    SR_OV = (result < (-2147483647 - 1)) || (result > (2147483647));
-                    var uresult = uint32(rA) * uint32(rB);
-                    SR_CY = (uresult > (4294967295));
-                    */
-                    
                 }
                 break;
             case 0x30a:
                 // divu (specification seems to be wrong)
-                SR_CY = (rB|0) == 0;
-                SR_OV = 0;
-                if (!SR_CY) {
-                    r[corep + rindex>>2] = /*Math.floor*/((rA>>>0) / (rB>>>0));
+                SR_OV = (rB|0) == 0;
+                if (!SR_OV) {
+                    r[corep + rindex>>2] = (rA>>>0) / (rB>>>0);
                 }
                 break;
             case 0x309:
                 // div (specification seems to be wrong)
-                SR_CY = (rB|0) == 0;
-                SR_OV = 0;
-                if (!SR_CY) {
+                SR_OV = (rB|0) == 0;
+                if (!SR_OV) {
                     r[corep + rindex>>2] = (rA|0) / (rB|0);
                 }
-
                 break;
             default:
                 //DebugMessage("Error: op38 opcode not supported yet");
@@ -11015,8 +12844,6 @@ return {
     Step: Step,
     GetFlags: GetFlags,
     SetFlags: SetFlags,
-    PutState: PutState,
-    GetState: GetState,    
     GetTimeToNextInterrupt: GetTimeToNextInterrupt,
     ProgressTime: ProgressTime,
     GetTicks: GetTicks,
@@ -11027,10 +12854,9 @@ return {
 
 }
 
-
 module.exports = SMPCPU;
 
-},{"../messagehandler":28}],33:[function(require,module,exports){
+},{"../messagehandler":33}],39:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- RAM ------------------------
 // -------------------------------------------------
@@ -11053,6 +12879,7 @@ function RAM(heap, ramoffset) {
     this.int32mem = new Int32Array(this.heap, ramoffset);
     this.uint8mem = new Uint8Array(this.heap, ramoffset);
     this.sint8mem = new Int8Array(this.heap, ramoffset);
+
     this.devices = new Array(0x100);
 
     // generic functions assume little endian
@@ -11126,7 +12953,8 @@ RAM.prototype.Read32BigTemplate = function(addr) {
 
 RAM.prototype.Read32LittleTemplate = function(addr) {
     addr = addr | 0;
-    if (addr >= 0) {
+    if (addr < 0) {
+        addr = addr ^ 0x80000000;
         if (this.int32mem.byteLength <= addr) {
             message.Debug("Error in Read32Little: read above upper boundary");
             message.Abort();
@@ -11151,7 +12979,8 @@ RAM.prototype.Write32BigTemplate = function(addr, x) {
 
 RAM.prototype.Write32LittleTemplate = function(addr, x) {
     addr = addr | 0;
-    if (addr >= 0) {
+    if (addr < 0) {
+        addr = addr ^ 0x80000000;
         if (this.int32mem.byteLength <= addr) {
             message.Debug("Error in Write32Little: write above upper boundary");
             message.Abort();
@@ -11176,7 +13005,8 @@ RAM.prototype.Read8BigTemplate = function(addr) {
 
 RAM.prototype.Read8LittleTemplate = function(addr) {
     addr = addr | 0;
-    if (addr >= 0) {
+    if (addr < 0) {
+        addr = addr ^ 0x80000000;
         if (this.uint8mem.byteLength <= addr) {
             message.Debug("Error in Read8Little: read above upper boundary");
             message.Abort();
@@ -11200,8 +13030,9 @@ RAM.prototype.Write8BigTemplate = function(addr, x) {
 };
 
 RAM.prototype.Write8LittleTemplate = function(addr, x) {
-    addr = addr | 0;
-    if (addr >= 0) {
+    addr = addr | 0
+    if (addr < 0) {
+        addr = addr ^ 0x80000000;
         if (this.uint8mem.byteLength <= addr) {
             message.Debug("Error in Write8Little: write above upper boundary");
             message.Abort();
@@ -11226,7 +13057,8 @@ RAM.prototype.Read16BigTemplate = function(addr) {
 
 RAM.prototype.Read16LittleTemplate = function(addr) {
     addr = addr | 0;
-    if (addr >= 0) {
+    if (addr < 0) {
+        addr = addr ^ 0x80000000;
         if (this.uint8mem.byteLength <= addr) {
             message.Debug("Error in Read16Little: read above upper boundary");
             message.Abort();
@@ -11252,7 +13084,8 @@ RAM.prototype.Write16BigTemplate = function(addr, x) {
 
 RAM.prototype.Write16LittleTemplate = function(addr, x) {
     addr = addr | 0;
-    if (addr >= 0) {
+    if (addr < 0) {
+        addr = addr ^ 0x80000000;
         if (this.uint8mem.byteLength <= addr) {
             message.Debug("Error in Write16Little: write above upper boundary");
             message.Abort();
@@ -11268,7 +13101,7 @@ RAM.prototype.Write16LittleTemplate = function(addr, x) {
 
 module.exports = RAM;
 
-},{"./messagehandler":28,"./utils":43}],34:[function(require,module,exports){
+},{"./messagehandler":33,"./utils":48}],40:[function(require,module,exports){
 
 "use strict";
 var message = require('../messagehandler');
@@ -11282,6 +13115,7 @@ var PRV_M = 0x03;
 var CSR_MSTATUS   = 0x300;
 
 function Disassemble(ins,r,csr,pc) {
+    message.Debug("pc=" + utils.ToHex(pc) + " ins=" + utils.ToHex(ins));
 
     switch(ins&0x7F) {
 
@@ -11291,31 +13125,31 @@ function Disassemble(ins,r,csr,pc) {
                 
                 case 0x00:
                     //lb
-                    message.Debug("lb - "+ utils.ToHex(ins));
+                    message.Debug("lb");
                     break;
 
                 case 0x01:
                     //lh
-                    message.Debug("lh - "+ utils.ToHex(ins));
+                    message.Debug("lh");
                     break;
 
                 case 0x02:
                     //lw
-                    message.Debug("lw - "+ utils.ToHex(ins));
+                    message.Debug("lw");
                     break;
 
                 case 0x04:
                     //lbu
-                    message.Debug("lbu - "+ utils.ToHex(ins));
+                    message.Debug("lbu");
                     break;
 
                 case 0x05:
                     //lhu
-                    message.Debug("lhu - "+ utils.ToHex(ins));
+                    message.Debug("lhu");
                     break;
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11327,21 +13161,21 @@ function Disassemble(ins,r,csr,pc) {
                 
                 case 0x00:
                     //sb
-                    message.Debug("sb - "+ utils.ToHex(ins));
+                    message.Debug("sb");
                     break;
 
                 case 0x01:
                     //sh
-                    message.Debug("sh - "+ utils.ToHex(ins));
+                    message.Debug("sh");
                     break;
 
                 case 0x02:
                     //sw
-                    message.Debug("sw - "+ utils.ToHex(ins));
+                    message.Debug("sw");
                     break;
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11353,52 +13187,52 @@ function Disassemble(ins,r,csr,pc) {
                 
                 case 0x00:
                     //addi
-                    message.Debug("addi - "+ utils.ToHex(ins));
+                    message.Debug("addi");
                     break;
 
                 case 0x02:
                     //slti
-                    message.Debug("slti - "+ utils.ToHex(ins));
+                    message.Debug("slti");
                     break;
 
                 case 0x03:
                     //sltiu
-                    message.Debug("sltiu - "+ utils.ToHex(ins));
+                    message.Debug("sltiu");
                     break;
 
                 case 0x04:
                     //xori
-                    message.Debug("xori - "+ utils.ToHex(ins));
+                    message.Debug("xori");
                     break;
 
                 case 0x06:
                     //ori
-                    message.Debug("ori - "+ utils.ToHex(ins));
+                    message.Debug("ori");
                     break;
 
                 case 0x07:
                     //andi
-                    message.Debug("andi - "+ utils.ToHex(ins));
+                    message.Debug("andi");
                     break;
 
                 case 0x01:
                     //slli
-                    message.Debug("slli - "+ utils.ToHex(ins));
+                    message.Debug("slli");
                     break;
 
                 case 0x05:
                     if(((ins >> 25) & 0x7F) == 0x00){
                         //srli
-                        message.Debug("srli - "+ utils.ToHex(ins));
+                        message.Debug("srli");
                     }
                     else if(((ins >> 25) & 0x7F) == 0x20){
                         //srai
-                        message.Debug("srai - "+ utils.ToHex(ins));  
+                        message.Debug("srai");
                     }
                     break;
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11413,42 +13247,42 @@ function Disassemble(ins,r,csr,pc) {
                     switch((ins >> 12)&0x7) {
                         case 0x00:
                             //add
-                            message.Debug("add - "+ utils.ToHex(ins));
+                            message.Debug("add");
                             break;
 
                         case 0x02:
                             //slt
-                            message.Debug("slt - "+ utils.ToHex(ins));
+                            message.Debug("slt");
                             break;
 
                         case 0x03:
                             //sltu
-                            message.Debug("sltu - "+ utils.ToHex(ins));
+                            message.Debug("sltu");
                             break;
 
                         case 0x07:
                             //and
-                            message.Debug("and - "+ utils.ToHex(ins));
+                            message.Debug("and");
                             break;
 
                         case 0x06:
                             //or
-                            message.Debug("or - "+ utils.ToHex(ins));
+                            message.Debug("or");
                             break;
 
                         case 0x04:
                             //xor
-                            message.Debug("xor - "+ utils.ToHex(ins));
+                            message.Debug("xor");
                             break;
 
                         case 0x01:
                             //sll
-                            message.Debug("sll - "+ utils.ToHex(ins));
+                            message.Debug("sll");
                             break;
 
                         case 0x05:
                             //srl
-                            message.Debug("srl - "+ utils.ToHex(ins));
+                            message.Debug("srl");
                             break;
                     }
                     break;
@@ -11458,12 +13292,12 @@ function Disassemble(ins,r,csr,pc) {
                     switch((ins >> 12)&0x7) {
                         case 0x00:
                             //sub
-                            message.Debug("sub - "+ utils.ToHex(ins));
+                            message.Debug("sub");
                             break;
 
                         case 0x05:
                             //sra
-                            message.Debug("sra - "+ utils.ToHex(ins));
+                            message.Debug("sra");
                             break;
                     }
                     break;
@@ -11473,49 +13307,49 @@ function Disassemble(ins,r,csr,pc) {
                     switch((ins >> 12)&0x7) {
                         case 0x00:
                             //mul
-                            message.Debug("mul - "+ utils.ToHex(ins));
+                            message.Debug("mul");
                             break;
 
                         case 0x01:
                             //mulh
-                            message.Debug("mulh - "+ utils.ToHex(ins));
+                            message.Debug("mulh");
                             break;
 
                         case 0x02:
                             //mulhsu
-                            message.Debug("mulhsu - "+ utils.ToHex(ins));
+                            message.Debug("mulhsu");
                             break;
 
                         case 0x03:
                             //mulhu
-                            message.Debug("mulhu - "+ utils.ToHex(ins));
+                            message.Debug("mulhu");
                             break;
 
                         case 0x04:
                             //div
-                            message.Debug("div - "+ utils.ToHex(ins));
+                            message.Debug("div");
                             break;
 
                         case 0x05:
                             //divu
-                            message.Debug("divu - "+ utils.ToHex(ins));
+                            message.Debug("divu");
                             break;
 
                         case 0x06:
                             //rem
-                            message.Debug("rem - "+ utils.ToHex(ins));
+                            message.Debug("rem");
                             break;
 
                         case 0x07:
                             //remu
-                            message.Debug("remu - "+ utils.ToHex(ins));
+                            message.Debug("remu");
                             break;
                     }
                     break;
                
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11523,22 +13357,22 @@ function Disassemble(ins,r,csr,pc) {
 
         case 0x37:
             //lui
-            message.Debug("Lui - "+ utils.ToHex(ins));
+            message.Debug("Lui");
             break;
 
         case 0x17:
             //auipc
-            message.Debug("auipc - "+ utils.ToHex(ins));
+            message.Debug("auipc");
             break;
 
         case 0x6F:
             //jal
-            message.Debug("jal - "+ utils.ToHex(ins));
+            message.Debug("jal");
             break; 
 
         case 0x67:
             //jalr
-            message.Debug("jalr - "+ utils.ToHex(ins));
+            message.Debug("jalr");
             break;
 
         case 0x63:
@@ -11547,36 +13381,36 @@ function Disassemble(ins,r,csr,pc) {
                 
                 case 0x00:
                     //beq
-                    message.Debug("beq - "+ utils.ToHex(ins));
+                    message.Debug("beq");
                     break;
 
                 case 0x01:
                     //bne
-                    message.Debug("bne - "+ utils.ToHex(ins));
+                    message.Debug("bne");
                     break;
 
                 case 0x04:
                     //blt
-                    message.Debug("blt - "+ utils.ToHex(ins));
+                    message.Debug("blt");
                     break;
 
                 case 0x05:
                     //bge
-                    message.Debug("bge - "+ utils.ToHex(ins));
+                    message.Debug("bge");
                     break;
 
                 case 0x06:
                     //bltu
-                    message.Debug("bltu - "+ utils.ToHex(ins));
+                    message.Debug("bltu");
                     break;
 
                 case 0x07:
                     //bgeu
-                    message.Debug("bgeu - "+ utils.ToHex(ins));
+                    message.Debug("bgeu");
                     break;
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11588,12 +13422,12 @@ function Disassemble(ins,r,csr,pc) {
                 
                 case 0x01:
                     //csrrw
-                    message.Debug("csrrw - "+ utils.ToHex(ins));
+                    message.Debug("csrrw");
                     break;
 
                 case 0x02:
                     //csrrs
-                    message.Debug("csrrs - "+ utils.ToHex(ins));
+                    message.Debug("csrrs");
                     break;
 
                 case 0x03:
@@ -11689,20 +13523,20 @@ function Disassemble(ins,r,csr,pc) {
                             message.Debug("mrts - "+ utils.ToHex(ins));
                             break;
 
-                        case 0x101:
-                            //sfence.vm
-                            message.Debug("sfence.vm - "+ utils.ToHex(ins));
+                        case 0x120:
+                            //sfence.vma
+                            message.Debug("sfence.vma - "+ utils.ToHex(ins));
                             break;
 
                         default:
-                            message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                            message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                             break;
 
                     }
                     break; 
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11719,11 +13553,11 @@ function Disassemble(ins,r,csr,pc) {
 
                 case 0x03:
                     //fld
-                    message.Debug("fld - "+ utils.ToHex(ins));
+                    message.Debug("fld");
                     break;
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11735,16 +13569,16 @@ function Disassemble(ins,r,csr,pc) {
 
                 case 0x02:
                     //fsw
-                    message.Debug("fsw - "+ utils.ToHex(ins));
+                    message.Debug("fsw");
                     break;
 
                 case 0x03:
                     //fsd
-                    message.Debug("fsw - "+ utils.ToHex(ins));
+                    message.Debug("fsw");
                     break;
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
 
             }
@@ -11756,42 +13590,42 @@ function Disassemble(ins,r,csr,pc) {
                 
                 case 0x00 :
                     //fadd.s
-                    message.Debug("fadd.s - "+ utils.ToHex(ins));
+                    message.Debug("fadd.s");
                     break;
 
                 case 0x04:
                     //fsub.s
-                    message.Debug("fsub.s - "+ utils.ToHex(ins));
+                    message.Debug("fsub.s");
                     break;
 
                 case 0x60:
                     //fcvt.w.s
-                    message.Debug("fcvt.w.s - "+ utils.ToHex(ins));
+                    message.Debug("fcvt.w.s");
                     break;
 
                 case 0x01 :
                     //fadd.d
-                    message.Debug("fadd.d - "+ utils.ToHex(ins));
+                    message.Debug("fadd.d");
                     break;
 
                 case 0x05:
                     //fsub.d
-                    message.Debug("fsub.d - "+ utils.ToHex(ins));
+                    message.Debug("fsub.d");
                     break;
 
                 case 0x61:
                     //fcvt.w.d
-                    message.Debug("fcvt.w.s - "+ utils.ToHex(ins));
+                    message.Debug("fcvt.w.s");
                     break;
 
                 case 0x78:
                     //fmv.s.x
-                    message.Debug("fmv.s.x - "+ utils.ToHex(ins));
+                    message.Debug("fmv.s.x");
                     break;
 
 
                 default:
-                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + "not found");
+                    message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + "not found");
                     break;
             }
             break;
@@ -11802,57 +13636,57 @@ function Disassemble(ins,r,csr,pc) {
                 
                 case 0x01:
                     //amoswap
-                    message.Debug("amoswap - "+ utils.ToHex(ins));
+                    message.Debug("amoswap");
                     break;
 
                 case 0x00:
                     //amoadd
-                    message.Debug("amoadd - "+ utils.ToHex(ins));
+                    message.Debug("amoadd");
                     break;
 
                 case 0x04:
                     //amoxor
-                    message.Debug("amoxor - "+ utils.ToHex(ins));
+                    message.Debug("amoxor");
                     break;
 
                 case 0x0C:
                     //amoand
-                    message.Debug("amoand - "+ utils.ToHex(ins));
+                    message.Debug("amoand");
                     break;
 
                 case 0x08:
                     //amoor
-                    message.Debug("amoor - "+ utils.ToHex(ins));
+                    message.Debug("amoor");
                     break;
 
                 case 0x10:
                     //amomin
-                    message.Debug("amomin - "+ utils.ToHex(ins));
+                    message.Debug("amomin");
                     break;
 
                case 0x14:
                     //amomax
-                    message.Debug("amomax - "+ utils.ToHex(ins));
+                    message.Debug("amomax");
                     break;
 
                 case 0x18:
                     //amominu
-                    message.Debug("amominu - "+ utils.ToHex(ins));
+                    message.Debug("amominu");
                     break;
 
                 case 0x1C:
                     //amomaxu
-                    message.Debug("amomaxu - "+ utils.ToHex(ins));
+                    message.Debug("amomaxu");
                     break;
 
                 case 0x02:
                     //lr.d
-                    message.Debug("lr.d - "+ utils.ToHex(ins));
+                    message.Debug("lr.d");
                     break;
 
                 case 0x03:
                     //sc.d
-                    message.Debug("sc.d - "+ utils.ToHex(ins));
+                    message.Debug("sc.d");
                     break;
 
                 default:
@@ -11864,2424 +13698,20 @@ function Disassemble(ins,r,csr,pc) {
 
         case 0x0F:
             //fence
-            message.Debug("fence - "+ utils.ToHex(ins));
+            message.Debug("fence");
             break;
 
         default:
-            message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + " not found at "+utils.ToHex(this.pc));
+            message.Debug("Error in disassemble: Instruction " + utils.ToHex(ins) + " not found");
             break;
     }
 
-    message.Debug(utils.ToHex(pc));
 };
 
 module.exports.Disassemble = Disassemble;
-},{"../messagehandler":28,"../utils":43}],35:[function(require,module,exports){
-// -------------------------------------------------
-// -------------------- CPU ------------------------
-// -------------------------------------------------
-var message = require('../messagehandler');
-var utils = require('../utils');
-var DebugIns = require('./disassemble');
 
 
-// constructor
-function DynamicCPU(stdlib, foreign, heap) {
-"use asm";
-
-var DebugMessage = foreign.DebugMessage;
-var abort = foreign.abort;
-var Read32 = foreign.Read32;
-var Write32 = foreign.Write32;
-var Read16 = foreign.Read16;
-var Write16 = foreign.Write16;
-var Read8 = foreign.Read8;
-var Write8 = foreign.Write8;
-var ReadDEVCMDToHost = foreign.ReadDEVCMDToHost;
-var ReadDEVCMDFromHost = foreign.ReadDEVCMDFromHost;
-var WriteDEVCMDToHost = foreign.WriteDEVCMDToHost;
-var WriteDEVCMDFromHost = foreign.WriteDEVCMDFromHost;
-var ReadToHost = foreign.ReadToHost;
-var ReadFromHost = foreign.ReadFromHost;
-var WriteToHost = foreign.WriteToHost;
-var WriteFromHost = foreign.WriteFromHost;
-var IsQueueEmpty = foreign.IsQueueEmpty;
-var mul = foreign.mul;
-var MathAbs = stdlib.Math.abs;
-
-var ERROR_INCOMPLETE_VMPRIVILEGE = 0;
-var ERROR_VMPRIVILEGE = 1;
-var ERROR_VMMODE = 2;
-var ERROR_SETCSR = 3;
-var ERROR_GETCSR = 4;
-var ERROR_LOAD_WORD = 5;
-var ERROR_STORE_WORD = 6;
-var ERROR_INSTRUCTION_NOT_FOUND = 7;
-var ERROR_ECALL = 8;
-var ERROR_ERET = 9;
-var ERROR_ERET_PRIV = 10;
-var ERROR_MRTS = 11;
-var ERROR_ATOMIC_INSTRUCTION = 12;
-
-var PRV_U = 0x00;
-var PRV_S = 0x01;
-var PRV_H = 0x02;
-var PRV_M = 0x03;
-
-var VM_READ  = 0;
-var VM_WRITE = 1;
-var VM_FETCH = 2;
-
-var CAUSE_TIMER_INTERRUPT          = 0x80000001;
-var CAUSE_HOST_INTERRUPT           = 0x80000002;
-var CAUSE_SOFTWARE_INTERRUPT       = 0x80000000;
-var CAUSE_INSTRUCTION_ACCESS_FAULT = 0x01;
-var CAUSE_ILLEGAL_INSTRUCTION      = 0x02;
-var CAUSE_BREAKPOINT               = 0x03;
-var CAUSE_LOAD_ACCESS_FAULT        = 0x05;
-var CAUSE_STORE_ACCESS_FAULT       = 0x07;
-var CAUSE_ENVCALL_UMODE            = 0x08;
-var CAUSE_ENVCALL_SMODE            = 0x09;
-var CAUSE_ENVCALL_HMODE            = 0x0A;
-var CAUSE_ENVCALL_MMODE            = 0x0B;
-
-
-var CSR_CYCLES = 0x3000;
-var CSR_CYCLEW = 0x2400;
-
-
-var CSR_FFLAGS    = 0x4;
-var CSR_FRM       = 0x8;
-var CSR_FCSR      = 0xC;
-
-var CSR_SSTATUS   = 0x400;
-var CSR_STVEC     = 0x404;
-var CSR_SIE       = 0x410;
-var CSR_STIMECMP  = 0x484;
-var CSR_SSCRATCH  = 0x500;
-var CSR_SEPC      = 0x504;
-var CSR_SIP       = 0x510;
-var CSR_SPTBR     = 0x600;
-var CSR_SASID     = 0x604;
-
-var CSR_HEPC      = 0x904;
-
-var CSR_MSTATUS   = 0xC00;
-var CSR_MTVEC     = 0xC04;
-var CSR_MTDELEG   = 0xC08;
-var CSR_MIE       = 0xC10;
-var CSR_MTIMECMP  = 0xC84;
-var CSR_MTIMECMPH = 0xD84;
-var CSR_MEPC      = 0xD04;
-var CSR_MSCRATCH  = 0xD00;
-var CSR_MCAUSE    = 0xD08;
-var CSR_MBADADDR  = 0xD0C;
-var CSR_MIP       = 0xD10;
-var CSR_MTOHOST_TEMP = 0xD14; // terminal output, temporary for the patched pk.
-
-var CSR_MTIME     = 0x1C04;
-var CSR_MTIMEH    = 0x1D04;
-var CSR_MRESET    = 0x1E08;
-var CSR_SEND_IPI  = 0x1E0C;
-
-var CSR_MTOHOST         = 0x1E00;
-var CSR_MFROMHOST       = 0x1E04;
-var CSR_MDEVCMDTOHOST   = 0x1E40; // special
-var CSR_MDEVCMDFROMHOST = 0x1E44; // special
-
-var CSR_TIMEW     = 0x2404;
-var CSR_INSTRETW  = 0x2408;
-var CSR_CYCLEHW   = 0x2600;
-var CSR_TIMEHW    = 0x2604;
-var CSR_INSTRETHW = 0x2608;
-
-var CSR_STIMEW    = 0x2804;
-var CSR_STIMEH    = 0x3604;
-var CSR_STIMEHW   = 0x2A04;
-var CSR_STIME     = 0x3404;
-var CSR_SCAUSE    = 0x3508;
-var CSR_SBADADDR  = 0x350C;
-var CSR_MCPUID    = 0x3C00;
-var CSR_MIMPID    = 0x3C04;
-var CSR_MHARTID   = 0x3C40;
-var CSR_CYCLEH    = 0x3200;
-var CSR_TIMEH     = 0x3204;
-var CSR_INSTRETH  = 0x3208;
-
-var CSR_TIME      = 0x3004;
-var CSR_INSTRET   = 0x3008;
-var CSR_STATS     = 0x300;
-var CSR_UARCH0    = 0x3300;
-var CSR_UARCH1    = 0x3304;
-var CSR_UARCH2    = 0x3008;
-var CSR_UARCH3    = 0x330C;
-var CSR_UARCH4    = 0x3310;
-var CSR_UARCH5    = 0x3314;
-var CSR_UARCH6    = 0x3318;
-var CSR_UARCH7    = 0x331C;
-var CSR_UARCH8    = 0x3320;
-var CSR_UARCH9    = 0x3324;
-var CSR_UARCH10   = 0x3328;
-var CSR_UARCH11   = 0x332C;
-var CSR_UARCH12   = 0x3330;
-var CSR_UARCH13   = 0x33334;
-var CSR_UARCH14   = 0x33338;
-var CSR_UARCH15   = 0x3333C;
-
-var r = new stdlib.Int32Array(heap); // registers
-var rp = 0x00; //Never used
-
-var f = new stdlib.Float64Array(heap); // registers
-var fp = 0x80;
-
-var fi = new stdlib.Int32Array(heap); // for copying operations
-var fip = 0x80;
-
-var ff = new stdlib.Float32Array(heap); // the zero register is used to convert to single precision
-var ffp = 0x00; //Never used
-
-var csr = new stdlib.Int32Array(heap);
-var csrp = 0x2000;
-
-var ram = new stdlib.Int32Array(heap);
-var ramp = 0x100000;
-
-var ram8 = new stdlib.Int8Array(heap);
-var ram16 = new stdlib.Int16Array(heap);
-
-var pc = 0x200;
-var pcorigin = 0x200;
-var pc_change = 1; //1 implies pc has been changed by an instruction
-var ticks = 0;
-var amoaddr = 0,amovalue = 0;
-
-var fence = 0x200;
-var ppc = 0x200;
-var ppcorigin = 0x200;
-
-var instlb_index = -1; //tlb index for pc
-var instlb_entry = -1;
-var read8tlb_index = -1; //tlb index for lb ins
-var read8tlb_entry = -1;
-var read8utlb_index = -1; //tlb index for lbu ins
-var read8utlb_entry = -1;
-var read16tlb_index = -1; //tlb index for lh ins
-var read16tlb_entry = -1;
-var read16utlb_index = -1; //tlb index for lhu ins
-var read16utlb_entry = -1;
-var read32tlb_index = -1; //tlb index for lw ins
-var read32tlb_entry = -1;
-var store8tlb_index = -1; //tlb index for sb ins
-var store8tlb_entry = -1;
-var store16tlb_index = -1; //tlb index for sh ins
-var store16tlb_entry = -1;
-var store32tlb_index = -1; //tlb index for sw ins
-var store32tlb_entry = -1;
-
-var float_read32tlb_index = -1; //tlb index for flw ins
-var float_read32tlb_entry = -1;
-var float_read64tlb_index = -1; //tlb index for fld ins
-var float_read64tlb_entry = -1;
-var float_store32tlb_index = -1; //tlb index for fsw ins
-var float_store32tlb_entry = -1;
-var float_store64tlb_index = -1; //tlb index for fsd ins
-var float_store64tlb_entry = -1;
-
-var queue_status = 0; // 1 means queue is full
-
-function Init() {
-    Reset();
-}
-
-function Reset() {
-    ticks = 0;
-    csr[(csrp + CSR_MSTATUS)>>2]  = 0x96; // 1001 0110 - All Interrupts Disabled, FPU disabled 
-    csr[(csrp + CSR_MTOHOST)>>2]  =  0x780;
-    csr[(csrp + CSR_MCPUID)>>2]   = 0x4112D;
-    csr[(csrp + CSR_MIMPID)>>2]   = 0x01;
-    csr[(csrp + CSR_MHARTID)>>2]  = 0x00;
-    csr[(csrp + CSR_MTVEC)>>2]    = 0x100;
-    csr[(csrp + CSR_MIE)>>2]      = 0x00;
-    csr[(csrp + CSR_MEPC)>>2]     = 0x00;
-    csr[(csrp + CSR_MCAUSE)>>2]   = 0x00;
-    csr[(csrp + CSR_MBADADDR)>>2] = 0x00;
-    csr[(csrp + CSR_SSTATUS)>>2]  = 0x3010;
-    csr[(csrp + CSR_STVEC)>>2]    = 0x00;
-    csr[(csrp + CSR_SIE)>>2]      = 0x00;
-    csr[(csrp + CSR_TIME)>>2]     = 0x0;
-    csr[(csrp + CSR_SPTBR)>>2]    = 0x40000;
-
-    // for atomic load & store instructions
-    amoaddr = 0x00; 
-    amovalue = 0x00;
-}
-
-function GetTimeToNextInterrupt() {
-    return 10;
-}
-
-function GetTicks() {
-    return ticks|0;
-}
-
-function ProgressTime(delta) {
-    delta = delta|0;
-    ticks = ticks + delta|0;
-}
-
-
-function AnalyzeImage() // we haveto define these to copy the cpus
-{
-}
-
-function CheckForInterrupt() {
-};
-
-function RaiseInterrupt(line, cpuid) {
-    line = line|0;
-    cpuid = cpuid|0;
-    //DebugMessage("raise int " + line);
-    queue_status = 1;
-};
-
-function ClearInterrupt(line, cpuid) {
-    line = line|0;
-    cpuid = cpuid|0;
-};
-
-function Trap(cause, current_pc) {
-
-    cause = cause|0;
-    current_pc = current_pc|0;
-    var current_privilege_level = 0;
-    var offset = 0x100;
-    current_privilege_level = (csr[(csrp + CSR_MSTATUS)>>2] & 0x06) >> 1;
-    PushPrivilegeStack();
-    csr[(csrp + CSR_MEPC)>>2] = current_pc;
-    csr[(csrp + CSR_MCAUSE)>>2] = cause;
-    pc = (offset + (current_privilege_level << 6))|0;
-    fence = ppc;
-    pc_change = 1;
-    InvalidateTLB();
-};
-
-function MemTrap(addr, op) {
-
-    addr = addr|0;
-    op = op|0;
-    if((op|0) != (VM_FETCH|0)) pc = pcorigin + (ppc-ppcorigin)|0;
-    csr[(csrp + CSR_MBADADDR)>>2] = addr;
-    switch(op|0) {
-        case 0: //VM_READ
-            Trap(CAUSE_LOAD_ACCESS_FAULT, pc - 4|0);
-            break;
-
-        case 1: //VM_WRITE
-            Trap(CAUSE_STORE_ACCESS_FAULT, pc - 4|0);
-            break;
-
-        case 2: //VM_FETCH
-            Trap(CAUSE_INSTRUCTION_ACCESS_FAULT, pc);
-            break;
-    }
-
-}
-
-
-
-function CheckVMPrivilege(type, op) {
-
-    type = type|0;
-    op = op|0;
-    var priv = 0;
-    priv = (csr[(csrp + CSR_MSTATUS)>>2] & 0x06) >> 1;
-
-    switch(type|0) {
-
-        case 2: 
-            if ((op|0) == (VM_READ|0)) return 1;
-            if (((priv|0) == (PRV_U|0)) & ((op|0) == (VM_FETCH|0))) return 1;
-            return 0;
-            break;
-
-        case 3: 
-            if (!( ((priv|0) == (PRV_S|0)) & ((op|0) == (VM_FETCH|0)) ) ) return 1;
-            break;
-
-        case 4:
-            if ((op|0) == (VM_READ|0)) return 1;
-            return 0;
-            break;
-
-        case 5:
-            if ((op|0) != (VM_FETCH|0)) return 1;
-            break;
-
-        case 6:
-            if ((op|0) != (VM_WRITE|0)) return 1;
-            break;
-
-        case 7:
-            return 1;
-            break;
-
-        case 13:
-            if (((priv|0) == (PRV_S|0)) & ((op|0) != (VM_FETCH|0))) return 1;
-            break;
-
-        case 14:
-            if (((priv|0) == (PRV_S|0)) & ((op|0) != (VM_WRITE|0))) return 1;
-            break;
-
-        case 15: 
-            if ((priv|0) == (PRV_S|0)) return 1;
-            break;
-
-    }
-
-    DebugMessage(ERROR_INCOMPLETE_VMPRIVILEGE|0);
-    abort();
-    return 0;
-}
-
-
-function TranslateVM(addr, op) {
-
-    addr = addr|0;
-    op = op|0;
-    var vm = 0;
-    var current_privilege_level = 0;
-    var i = 1; //i = LEVELS -1 and LEVELS = 2 in a 32 bit System
-
-    var offset = 0;
-    var page_num = 0;
-    var frame_num = 0;
-    var type = 0;
-    var valid = 0;
-
-    //For Level 2
-    var new_sptbr = 0;
-    var new_page_num = 0;
-    var new_frame_num = 0;
-    var new_type = 0;
-    var new_valid = 0;
-    var ram_index = 0;
-
-
-    vm = (csr[(csrp + CSR_MSTATUS)>>2] >> 17) & 0x1F;
-    current_privilege_level = (csr[(csrp + CSR_MSTATUS)>>2] & 0x06) >> 1;
-    
-    // vm bare mode
-    if(((vm|0) == 0) | ((current_privilege_level|0) == (PRV_M|0))) return addr|0;
-
-    // hack, open mmio by direct mapping
-    //if ((addr>>>28) == 0x9) return addr;
-
-    // only RV32 supported
-    if((vm|0) != 8) {
-        DebugMessage(ERROR_VMMODE|0);
-        abort();
-    }
-
-    // LEVEL 1
-    offset = addr & 0xFFF;
-    page_num = (addr >>> 22)|0;
-
-    ram_index = (csr[(csrp + CSR_SPTBR)>>2]|0) + (page_num << 2)|0
-    frame_num = ram[(ramp + ram_index) >> 2]|0;
-    type = ((frame_num >> 1) & 0xF);
-    valid = (frame_num & 0x01);
-
-    if ((valid|0) == 0) {
-        //DebugMessage("Unsupported valid field " + valid + " or invalid entry in PTE at PC "+utils.ToHex(pc) + " pl:" + current_privilege_level + " addr:" + utils.ToHex(addr) + " op:"+op);
-        //abort();
-        MemTrap(addr, op);
-        return -1;
-    }
-    if ((type|0) >= 2) {
-
-        if (!(CheckVMPrivilege(type,op)|0)) {
-            DebugMessage(ERROR_VMPRIVILEGE|0);
-            abort();
-        }
-/*
-        var updated_frame_num = frame_num;
-        if(op == VM_READ)
-            updated_frame_num = (frame_num | 0x20);
-        else if(op == VM_WRITE)
-            updated_frame_num = (frame_num | 0x60);
-        Write32(csr[CSR_SPTBR] + (page_num << 2),updated_frame_num);
-*/
-        return (((frame_num >> 10) | ((addr >> 12) & 0x3FF)) << 12) | offset;
-    }
-
-    // LEVEL 2
-    //DebugMessage("Second level MMU");
-
-    offset = addr & 0xFFF;
-    new_sptbr = (frame_num & 0xFFFFFC00) << 2;
-    new_page_num = (addr >> 12) & 0x3FF;
-    ram_index = (new_sptbr|0) + (new_page_num << 2)|0;
-    new_frame_num = ram[(ramp + ram_index) >> 2]|0;
-    new_type = ((new_frame_num >> 1) & 0xF);
-    new_valid = (new_frame_num & 0x01);
-    i = (i - 1)|0;
-
-    if ((new_valid|0) == 0) {
-        MemTrap(addr, op);
-        return -1;
-    }
-
-    if (!(CheckVMPrivilege(new_type, op)|0)) {
-        //DebugMessage("Error in TranslateVM: Unhandled trap");
-        //abort();
-        MemTrap(addr, op);
-        return -1;
-    }
-
-/*
-    var updated_frame_num = new_frame_num;
-    if(op == VM_READ)
-        updated_frame_num = (new_frame_num | 0x20);
-    else if(op == VM_WRITE)
-        updated_frame_num = (new_frame_num | 0x60);
-    Write32(new_sptbr + (new_page_num << 2),updated_frame_num);
-*/
-
-    return ((new_frame_num >> 10) << 12) | offset | 0;
-};
-
-
-function SetCSR(addr,value) {
-
-    addr = addr|0;
-    value = value|0;
-    var mask = 0;
-    var ram_index = 0;
-    addr = addr << 2;
-    switch(addr|0)
-    {
-        case 0xC: //CSR_FCSR
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x1E40: //CSR_MDEVCMDTOHOST
-            csr[(csrp + addr)>>2] = value;
-            WriteDEVCMDToHost(value|0);
-            break;
-
-        case 0x1E44: //CSR_MDEVCMDFROMHOST
-            csr[(csrp + addr)>>2] = value;
-            WriteDEVCMDFromHost(value|0);
-            break;
-
-        case 0x1E00: //CSR_MTOHOST
-            csr[(csrp + addr)>>2] =  value;
-            WriteToHost(value|0);
-            break;
-
-        case 0xD14: //CSR_MTOHOST_TEMP only temporary for the patched pk.
-            ram_index = 0x90000000 >> 0;
-            ram8[(ramp + ram_index) >> 0] = value|0; 
-            if ((value|0) == 0xA) ram8[(ramp + ram_index) >> 0] = 0xD;
-            break;
-
-        case 0x1E04: //CSR_MFROMHOST
-            csr[(csrp + addr)>>2] = value;
-            WriteFromHost(value|0);
-            break;
-
-        case 0xC00: //CSR_MSTATUS
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x3C00: //CSR_MCPUID
-            //csr[addr] = value;
-            break;
-
-        case 0x3C04: //CSR_MIMPID
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x3C40: //CSR_MHARTID
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0xC04: //CSR_MTVEC
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0xD10: //CSR_MIP
-            //csr[addr] = value;
-            mask = 0x2 | 0x08; //mask = MIP_SSIP | MIP_MSIP
-            csr[(csrp + addr)>>2] = (csr[(csrp + addr)>>2] & ~mask) | (value & mask);
-            break;
-
-        case 0xC10: //CSR_MIE
-            //csr[addr] = value;
-            mask = 0x2 | 0x08 | 0x20; //mask = MIP_SSIP | MIP_MSIP | MIP_STIP
-            csr[(csrp + addr)>>2] = (csr[(csrp + addr)>>2] & ~mask) | (value & mask);
-            break;
-
-        case 0x504: //CSR_SEPC
-        case 0xD04: //CSR_MEPC
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0xD08: //CSR_MCAUSE
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x3508: //CSR_SCAUSE
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0xD0C: //CSR_MBADADDR
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x350C: //CSR_SBADADDR
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x400: //CSR_SSTATUS
-            csr[(csrp + CSR_SSTATUS)>>2] = value;
-            csr[(csrp + CSR_MSTATUS)>>2] = csr[(csrp + CSR_MSTATUS)>>2] & (~0x1F039); 
-            csr[(csrp + CSR_MSTATUS)>>2] = csr[(csrp + CSR_MSTATUS)>>2] | (csr[(csrp + CSR_SSTATUS)>>2] & 0x01); //IE0
-            csr[(csrp + CSR_MSTATUS)>>2] = csr[(csrp + CSR_MSTATUS)>>2] | (csr[(csrp + CSR_SSTATUS)>>2] & 0x08); //IE1
-            csr[(csrp + CSR_MSTATUS)>>2] = csr[(csrp + CSR_MSTATUS)>>2] | (csr[(csrp + CSR_SSTATUS)>>2] & 0x10); //PRV1
-            csr[(csrp + CSR_MSTATUS)>>2] = csr[(csrp + CSR_MSTATUS)>>2] | (csr[(csrp + CSR_SSTATUS)>>2] & 0xF000); //FS,XS
-            csr[(csrp + CSR_MSTATUS)>>2] = csr[(csrp + CSR_MSTATUS)>>2] | (csr[(csrp + CSR_SSTATUS)>>2] & 0x10000); //MPRV
-            break; 
-
-        case 0x404: //CSR_STVEC
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x510: //CSR_SIP
-            //csr[addr] = value;
-            mask = 0x2; //mask = MIP_SSIP
-            csr[(csrp + CSR_MIP)>>2] = (csr[(csrp + CSR_MIP)>>2] & ~mask) | (value & mask);
-            break;
-
-        case 0x410: //CSR_SIE
-            //csr[addr] = value;
-            mask = 0x2 | 0x20; //mask = MIP_SSIP | MIP_STIP
-            csr[(csrp + CSR_MIE)>>2] = (csr[(csrp + CSR_MIE)>>2] & ~mask) | (value & mask);
-            break;
-
-        case 0xD00: //CSR_MSCRATCH
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x500: //CSR_SSCRATCH
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x2400: //CSR_CYCLEW
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x3000: //CSR_CYCLES
-            ticks = value;
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x1C04:  //CSR_MTIME
-        case 0x3404:  //CSR_STIME
-        case 0x2804: //CSR_STIMEW
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x1D04:  //CSR_MTIMEH
-        case 0x3604:  //CSR_STIMEH
-        case 0x2A04: //CSR_STIMEHW
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x3004:  //CSR_TIME
-        case 0x2404: //CSR_TIMEW
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0xC84: //CSR_MTIMECMP
-        case 0x484: //CSR_STIMECMP
-            csr[(csrp + CSR_MIP)>>2] = csr[(csrp + CSR_MIP)>>2] & (~(0x20)); //csr[CSR_MIP] &= ~MIP_STIP
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0xD84: //CSR_MTIMECMPH
-        case 0x600: //CSR_SPTBR
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        case 0x04: //CSR_FRM
-        case 0x08: //CSR_FFLAGS
-            csr[(csrp + addr)>>2] = value;
-            break;
-
-        default:
-            csr[(csrp + addr)>>2] = value;
-            DebugMessage(ERROR_SETCSR|0);
-            abort();
-            break;
-    }
-};
-
-function GetCSR(addr) {
-
-    addr = addr|0;
-    var current_privilege_level = 0;
-    current_privilege_level = (csr[(csrp + CSR_MSTATUS)>>2] & 0x06) >> 1;
-    addr = (addr << 2)|0;
-    switch(addr|0)
-    {
-        case 0xC: //CSR_FCSR
-            return 0x0;
-            break;
-
-        case 0x1E40: //CSR_MDEVCMDTOHOST
-            return ReadDEVCMDToHost()|0;
-            break;
-
-        case 0x1E44: //CSR_MDEVCMDFROMHOST
-            return ReadDEVCMDFromHost()|0;
-            break;
-
-        case 0x1E00: //CSR_MTOHOST
-            return ReadToHost()|0;
-            break;
-
-        case 0xD14: //CSR_MTOHOST_TEMP only temporary for the patched pk.
-            return 0x0;
-            break;
-
-        case 0x1E04: //CSR_MFROMHOST
-            return ReadFromHost()|0;
-            break;
-
-        case 0xC00: //CSR_MSTATUS
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x3C00: //CSR_MCPUID
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x3C04: //CSR_MIMPID
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x3C40: //CSR_MHARTID
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0xC04: //CSR_MTVEC
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0xC10: //CSR_MIE
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x504: //CSR_SEPC
-        case 0xD04: //CSR_MEPC
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0xD08: //CSR_MCAUSE
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x3508: //CSR_SCAUSE
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0xD0C: //CSR_MBADADDR
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x350C: //CSR_SBADADDR
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x400: //CSR_SSTATUS
-            //if (current_privilege_level == 0) Trap(CAUSE_ILLEGAL_INSTRUCTION);
-            csr[(csrp + CSR_SSTATUS)>>2] = 0x00; 
-            csr[(csrp + CSR_SSTATUS)>>2] = csr[(csrp + CSR_SSTATUS)>>2] | (csr[(csrp + CSR_MSTATUS)>>2] & 0x01); //IE0
-            csr[(csrp + CSR_SSTATUS)>>2] = csr[(csrp + CSR_SSTATUS)>>2] | (csr[(csrp + CSR_MSTATUS)>>2] & 0x08); //IE1
-            csr[(csrp + CSR_SSTATUS)>>2] = csr[(csrp + CSR_SSTATUS)>>2] | (csr[(csrp + CSR_MSTATUS)>>2] & 0x10); //PRV1
-            csr[(csrp + CSR_SSTATUS)>>2] = csr[(csrp + CSR_SSTATUS)>>2] | (csr[(csrp + CSR_MSTATUS)>>2] & 0xF000); //FS,XS
-            csr[(csrp + CSR_SSTATUS)>>2] = csr[(csrp + CSR_SSTATUS)>>2] | (csr[(csrp + CSR_MSTATUS)>>2] & 0x10000); //MPRV
-            return csr[(csrp + CSR_SSTATUS)>>2]|0;
-            break;
-
-        case 0x404: //CSR_STVEC
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0xD10: //CSR_MIP
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x510: //CSR_SIP 
-            return (csr[(csrp + CSR_MIP)>>2] & (0x2 | 0x20))|0;//(MIP_SSIP | MIP_STIP)
-            break;
-
-        case 0x410: //CSR_SIE 
-            return (csr[(csrp + CSR_MIE)>>2] & (0x2 | 0x20))|0;//(MIP_SSIP | MIP_STIP)
-            break;
-
-        case 0xD00: //CSR_MSCRATCH
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x500: //CSR_SSCRATCH
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x2400: //CSR_CYCLEW
-            return ticks|0;
-            break;
-
-        case 0x3000: //CSR_CYCLES
-            return ticks|0;
-            break;
-
-        case 0x1C04:  //CSR_MTIME
-        case 0x3404:  //CSR_STIME
-        case 0x2804: //CSR_STIMEW
-            return ticks|0;
-            break;
-
-        case 0x1D04:  //CSR_MTIMEH
-        case 0x3604:  //CSR_STIMEH
-        case 0x2A04: //CSR_STIMEHW
-            return ((ticks) >> 32)|0;
-            break;
-
-        case 0x3004:  //CSR_TIME
-        case 0x2404: //CSR_TIMEW
-            return ticks|0;
-            break;
-
-        case 0xC84: //CSR_MTIMECMP
-        case 0x484: //CSR_STIMECMP
-            return csr[(csrp + addr)>>2]|0;
-            break;
-        
-        case 0xD84: //CSR_MTIMECMPH
-        case 0x600: //CSR_SPTBR
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        case 0x04: //CSR_FRM
-        case 0x08: //CSR_FFLAGS
-            return csr[(csrp + addr)>>2]|0;
-            break;
-
-        default:
-            DebugMessage(ERROR_GETCSR|0);
-            abort();
-            return csr[(csrp + addr)>>2]|0;
-            break;
-    }
-
-    return 0;
-   
-};
-
-function IMul(a,b,index) {
-
-    a = a|0;
-    b = b|0;
-    index = index|0;
-    var result0 = 0,result1 = 0;
-    
-    var a00 = 0, a16 = 0;
-    var b00 = 0, b16 = 0;
-
-    var c00 = 0;
-    var c16 = 0;
-    var c32 = 0;
-    var c48 = 0;
-
-    if (((a >>> 0) < 32767) & ((b >>> 0) < 65536)) {
-        result0 = mul(a|0,b|0)|0;
-        result1 = ((result0|0) < 0) ? -1 : 0;
-        if((index|0) == 0) return result0|0;
-        else return result1|0;
-    }
-
-    a00 = a & 0xFFFF;
-    a16 = a >>> 16;
-    b00 = b & 0xFFFF;
-
-    b16 = b >>> 16;
-
-    c00 = mul(a00|0,b00|0)|0;
-    c16 = ((c00 >>> 16) + (mul(a16|0,b00|0)|0))|0;
-    c32 = c16 >>> 16;
-    c16 = ((c16 & 0xFFFF) + (mul(a00|0,b16|0)|0))|0;
-    c32 = (c32 + (c16 >>> 16))|0;
-    c48 = c32 >>> 16;
-    c32 = ((c32 & 0xFFFF) + (mul(a16|0,b16|0)|0))|0;
-    c48 = (c48 + (c32 >>> 16))|0;
-
-    result0 = ((c16 & 0xFFFF) << 16) | (c00 & 0xFFFF);
-    result1 = ((c48 & 0xFFFF) << 16) | (c32 & 0xFFFF);
-    if((index|0) == 0) return result0|0;
-    return result1|0;
-};
-
-function UMul(a,b,index) {
-
-    a = a|0;
-    b = b|0;
-    index = index|0;
-    var result0 = 0,result1 = 0;
-    var doNegate = 0;
-
-    if ((a|0) == 0) return 0;
-    if ((b|0) == 0) return 0;
-
-    if ((((a|0) >= -32768) & ((a|0) <= 32767)) & (((b|0) >= -32768) & ((b|0) <= 32767))) {
-        result0 = mul(a|0,b|0)|0;
-        result1 = ((result0|0) < 0) ? -1 : 0;
-        if((index|0) == 0) return result0|0;
-        else return result1|0;
-    }
-
-    doNegate = ((a|0) < 0) ^ ((b|0) < 0);
-
-    a = MathAbs(a|0)|0;
-    b = MathAbs(b|0)|0;
-    result0 = IMul(a, b, 0)|0;
-    result1 = IMul(a, b, 1)|0;
-
-    if (doNegate) {
-        result0 = ~result0;
-        result1 = ~result1;
-        result0 = (result0 + 1) | 0;
-        if ((result0|0) == 0) result1 = (result1 + 1) | 0;
-    }
-
-    if((index|0) == 0) return result0|0;
-    return result1|0;
-};
-
-function SUMul(a,b,index) {
-
-    a = a|0;
-    b = b|0;
-    index = index|0;
-    var result0 = 0,result1 = 0;
-    var doNegate = 0;
-
-    if ((a|0) == 0) return 0;
-    if ((b|0) == 0) return 0;
-
-    if ((((a|0) >= -32768) & ((a|0) <= 32767)) & (((b|0) >= -32768) & ((b >>> 0) <= 32767))) {
-        result0 = mul(a|0,b|0)|0;
-        result1 = ((result0|0) < 0) ? -1 : 0;
-        if((index|0) == 0) return result0|0;
-        else return result1|0;
-    }
-
-    doNegate = ((a|0) < 0) ^ ((b|0) < 0);
-
-    a = MathAbs(a|0)|0;
-    b = MathAbs(b|0)|0;
-    result0 = IMul(a, b, 0)|0;
-    result1 = IMul(a, b, 1)|0;
-
-    if (doNegate) {
-        result0 = ~result0;
-        result1 = ~result1;
-        result0 = (result0 + 1) | 0;
-        if ((result0|0) == 0) result1 = (result1 + 1) | 0;
-    }
-
-    if((index|0) == 0) return result0|0;
-    return result1|0;
-};
-
-function InvalidateTLB(){
-
-    read8tlb_index = -1;
-    read8tlb_entry = -1;
-    read8utlb_index = -1;
-    read8utlb_entry = -1;
-    read16tlb_index = -1;
-    read16tlb_entry = -1;
-    read16utlb_index = -1;
-    read16utlb_entry = -1;
-    read32tlb_index = -1;
-    read32tlb_entry = -1;
-    store8tlb_index = -1;
-    store8tlb_entry = -1;
-    store16tlb_index = -1;
-    store16tlb_entry = -1;
-    store32tlb_index = -1;
-    store32tlb_entry = -1;
-
-    float_read32tlb_index = -1;
-    float_read32tlb_entry = -1;
-    float_read64tlb_index = -1;
-    float_read64tlb_entry = -1;
-    float_store32tlb_index = -1;
-    float_store32tlb_entry = -1;
-    float_store64tlb_index = -1;
-    float_store64tlb_entry = -1;
-
-}
-
-function PushPrivilegeStack(){
-
-    var mstatus = 0,privilege_level_stack = 0, new_privilege_level_stack = 0;
-    mstatus = csr[(csrp + CSR_MSTATUS)>>2]|0;
-    privilege_level_stack =  (mstatus & 0xFFF);
-    new_privilege_level_stack = (((privilege_level_stack << 2) | PRV_M) << 1) & 0xFFF;
-    csr[(csrp + CSR_MSTATUS)>>2] = (((mstatus >> 12) << 12) + new_privilege_level_stack) & 0xFFFEFFFF; //Last "and" to set mprv(bit 16) to zero
-};
-
-function PopPrivilegeStack(){
-
-    var mstatus = 0,privilege_level_stack = 0, new_privilege_level_stack = 0;
-    mstatus = csr[(csrp + CSR_MSTATUS)>>2]|0;
-    privilege_level_stack =  (mstatus & 0xFFF);
-    new_privilege_level_stack = ((privilege_level_stack >>> 3) | ((PRV_U << 1) | 0x1) << 9);
-    csr[(csrp + CSR_MSTATUS)>>2] = ((mstatus >> 12) << 12) + new_privilege_level_stack;
-};
-
-function Step(steps, clockspeed) {
-
-    steps = steps|0;
-    clockspeed = clockspeed|0;
-    var imm = 0x00;
-    var zimm = 0x00;
-    var mult = 0x00;
-    var quo = 0x00;
-    var rem = 0x00;
-    var result = 0x00;
-    var rs1 = 0x0;
-    var rs2 = 0x0;
-    var fs1 = 0.0;
-    var fs2 = 0.0;
-    var fs3 = 0.0;
-    
-    var delta = 0;
-    var paddr = 0;
-    var current_privilege_level = 0;
-    var interrupts = 0;
-    var ie = 0;
-    var ins = 0;
-    var dsteps = 64;
-    
-    for(;;) {
- 
-    if ((fence|0) != (ppc|0)) {
-
-        ins = ram[ppc >> 2]|0;
-        ppc = ppc + 4|0;
-
-        switch(ins&0x7F) {
-
-            case 0x03:
-                //lb, lh, lw, lbu, lhu
-                switch((ins >> 12)&0x7) {
-                    
-                    case 0x00:
-                        //lb
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((read8tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read8tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            read8tlb_index = paddr;
-                            read8tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        r[((ins >> 5) & 0x7C) >> 2] = ((ram8[(ramp + paddr) >> 0]) << 24) >> 24;
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x74; //If this ins comes again, it will take the faster route at opcode 0x74
-                        continue;
-
-                    case 0x01:
-                        //lh
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((read16tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read16tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            read16tlb_index = paddr;
-                            read16tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        r[((ins >> 5) & 0x7C) >> 2] = ((ram16[(ramp + paddr) >> 1]) << 16) >> 16;
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x75;
-                        continue;
-
-                    case 0x02:
-                        //lw
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if ((rs1+imm) & 3) {
-                             DebugMessage(ERROR_LOAD_WORD|0);
-                             abort();
-                        }
-                        if(!((read32tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read32tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            read32tlb_index = paddr;
-                            read32tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x76;
-                        continue;
-
-                    case 0x04:
-                        //lbu
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((read8utlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read8utlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            read8utlb_index = paddr;
-                            read8utlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        r[((ins >> 5) & 0x7C) >> 2] = (ram8[(ramp + paddr) >> 0]) & 0xFF;
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x77;
-                        continue;
-
-                    case 0x05:
-                        //lhu
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((read16utlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read16utlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            read16utlb_index = paddr;
-                            read16utlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        r[((ins >> 5) & 0x7C) >> 2] = (ram16[(ramp + paddr) >> 1]) & 0xFFFF;
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x78;
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x23:
-                //sb, sh, sw
-                imm = ((ins >> 25) << 5) | ((ins >> 7) & 0x1F);
-                switch((ins >> 12)&0x7) {
-                    
-                    case 0x00:
-                        //sb
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((store8tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (store8tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_WRITE)|0;
-                            if((paddr|0) == -1) continue;
-
-                            store8tlb_index = paddr;
-                            store8tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        ram8[(ramp + paddr) >> 0] = (r[((ins >> 18) & 0x7C) >> 2] & 0xFF);
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x79;
-                        continue;
-
-                    case 0x01:
-                        //sh
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((store16tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (store16tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_WRITE)|0;
-                            if((paddr|0) == -1) continue;
-
-                            store16tlb_index = paddr;
-                            store16tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        ram16[(ramp + paddr) >> 1] = (r[((ins >> 18) & 0x7C) >> 2] & 0xFFFF);
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x7A;
-                        continue;
-
-                    case 0x02:
-                        //sw
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if ((rs1+imm) & 3) {
-                             DebugMessage(ERROR_STORE_WORD|0);
-                             abort();
-                        }
-                        if(!((store32tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (store32tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_WRITE)|0;
-                            if((paddr|0) == -1) continue;
-
-                            store32tlb_index = paddr;
-                            store32tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        ram[(ramp + paddr) >> 2] = r[((ins >> 18) & 0x7C) >> 2]|0;
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x7B;
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x13:
-                //addi,slti,sltiu,xori,ori,andi,slli,srli,srai
-                switch((ins >> 12)&0x7) {
-                    
-                    case 0x00:
-                        //addi
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        r[((ins >> 5) & 0x7C) >> 2] = rs1 + (ins >> 20)|0;
-                        continue;
-
-                    case 0x02:
-                        //slti
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if((rs1|0) < (ins >> 20)) r[((ins >> 5) & 0x7C) >> 2] = 0x01;
-                        else r[((ins >> 5) & 0x7C) >> 2] = 0x00;
-                        continue;
-
-                    case 0x03:
-                        //sltiu
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if((rs1 >>> 0) < ((ins >> 20) >>> 0)) r[((ins >> 5) & 0x7C) >> 2] = 0x01;
-                        else r[((ins >> 5) & 0x7C) >> 2] = 0x00;
-                        continue;
-
-                    case 0x04:
-                        //xori
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        r[((ins >> 5) & 0x7C) >> 2] = rs1 ^ (ins >> 20);
-                        continue;
-
-                    case 0x06:
-                        //ori
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        r[((ins >> 5) & 0x7C) >> 2] = rs1 | (ins >> 20);
-                        continue;
-
-                    case 0x07:
-                        //andi
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        r[((ins >> 5) & 0x7C) >> 2] = rs1 & (ins >> 20);
-                        continue;
-
-                    case 0x01:
-                        //slli
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        r[((ins >> 5) & 0x7C) >> 2] = rs1 << ((ins >> 20) & 0x1F);
-                        continue;
-
-                    case 0x05:
-                        if(((ins >> 25) & 0x7F) == 0x00){
-                            //srli
-                            rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                            r[((ins >> 5) & 0x7C) >> 2] = rs1 >>> ((ins >> 20) & 0x1F);
-                        }
-                        else if(((ins >> 25) & 0x7F) == 0x20){
-                            //srai
-                            rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                            r[((ins >> 5) & 0x7C) >> 2] = rs1 >> ((ins >> 20) & 0x1F);
-                        }
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x33:
-                //add,sub,sll,slt,sltu,xor,srl,sra,or,and
-                switch((ins >> 25)&0x7F) {
-                    
-                    case 0x00:
-                        //add,slt,sltu,add,or,xor,sll,srl
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                        switch((ins >> 12)&0x7) {
-                            case 0x00:
-                                //add
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 + rs2;
-                                continue;
-
-                            case 0x02:
-                                //slt
-                                if((rs1|0) < (rs2|0)) r[((ins >> 5) & 0x7C) >> 2] = 0x01;
-                                else r[((ins >> 5) & 0x7C) >> 2] = 0x00;
-                                continue;
-
-                            case 0x03:
-                                //sltu
-                                if((rs1 >>> 0) < (rs2 >>> 0)) r[((ins >> 5) & 0x7C) >> 2] = 0x01;
-                                else r[((ins >> 5) & 0x7C) >> 2] = 0x00;
-                                continue;
-
-                            case 0x07:
-                                //and
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 & rs2;
-                                continue;
-
-                            case 0x06:
-                                //or
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 | rs2;
-                                continue;
-
-                            case 0x04:
-                                //xor
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 ^ rs2;
-                                continue;
-
-                            case 0x01:
-                                //sll
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 << (rs2 & 0x1F);
-                                continue;
-
-                            case 0x05:
-                                //srl
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 >>> (rs2 & 0x1F);
-                                continue;
-                        }
-                        continue;
-
-                    case 0x20:
-                        //sub, sra
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                        switch((ins >> 12)&0x7) {
-                            case 0x00:
-                                //sub
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 - rs2;
-                                continue;
-
-                            case 0x05:
-                                //sra
-                                r[((ins >> 5) & 0x7C) >> 2] = rs1 >> (rs2 & 0x1F);
-                                continue;
-                        }
-                        continue;
-
-                    case 0x01:
-                        //mul,mulh,mulhsu,mulhu,div,divu,rem,remu
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                        switch((ins >> 12)&0x7) {
-                            case 0x00:
-                                //mul
-                                mult = mul(rs1|0,rs2|0)|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = mult & 0xFFFFFFFF;
-                                continue;
-
-                            case 0x01:
-                                //mulh
-                                result = UMul(rs1,rs2, 1)|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = result;
-                                continue;
-
-                            case 0x02:
-                                //mulhsu
-                                result = SUMul(rs1,rs2>>>0, 1)|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = result;
-                                continue;
-
-                            case 0x03:
-                                //mulhu
-                                result = IMul(rs1>>>0, rs2>>>0, 1)|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = result;
-                                continue;
-
-                            case 0x04:
-                                //div
-                                if((rs2|0) == 0)
-                                    quo = -1;
-                                else
-                                    quo = ((rs1|0) / (rs2|0))|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = quo;
-                                continue;
-
-                            case 0x05:
-                                //divu
-                                if((rs2|0) == 0)
-                                    quo = 0xFFFFFFFF;
-                                else
-                                    quo = ((rs1 >>> 0) / (rs2 >>> 0))|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = quo;
-                                continue;
-
-                            case 0x06:
-                                //rem
-                                if((rs2|0) == 0)
-                                    rem = rs1;
-                                else
-                                    rem = ((rs1|0) % (rs2|0))|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = rem;
-                                continue;
-
-                            case 0x07:
-                                //remu
-                                if((rs2|0) == 0)
-                                    rem = (rs1 >>> 0);
-                                else
-                                    rem = ((rs1 >>> 0) % (rs2 >>> 0))|0;
-                                r[((ins >> 5) & 0x7C) >> 2] = rem;
-                                continue;
-                        }
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x37:
-                //lui
-                r[((ins >> 5) & 0x7C) >> 2] = (ins & 0xFFFFF000);
-                continue;
-
-            case 0x17:
-                //auipc
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                imm = (ins & 0xFFFFF000);
-                r[((ins >> 5) & 0x7C) >> 2] = (imm + pc - 4)|0;
-                fence = ppc;
-                pc_change = 1;
-                continue;
-
-            case 0x6F:
-                //jal
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                imm =  (((ins >> 21) & 0x3FF) | (((ins >> 20) & 0x1) << 10) | (((ins >> 12) & 0xFF) << 11) | ((ins >> 31) << 19) ) << 1; 
-                r[((ins >> 5) & 0x7C) >> 2] = pc;
-                pc = pc + imm - 4|0;
-                fence = ppc;
-                pc_change = 1;
-                r[0] = 0;
-                continue; 
-
-            case 0x67:
-                //jalr
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                imm = (ins >> 20);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                r[((ins >> 5) & 0x7C) >> 2] = pc;
-                pc = ((rs1 + imm) & 0xFFFFFFFE)|0;
-                fence = ppc;
-                pc_change = 1;
-                r[0] = 0;
-                continue;
-
-            case 0x63:
-                //beq, bne, blt, bge, bltu, bgeu
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                fence = ppc;
-                pc_change = 1;
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                switch((ins >> 12)&0x7) {
-                    
-                    case 0x00:
-                        //beq
-                        if((rs1|0) == (rs2|0)){
-                            imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                            pc = pc + imm - 4|0;
-                        }
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x68;
-                        continue;
-
-                    case 0x01:
-                        //bne
-                        if((rs1|0) != (rs2|0)){
-                            imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                            pc = pc + imm - 4|0;
-                        }
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x69;
-                        continue;
-
-                    case 0x04:
-                        //blt
-                        if((rs1|0) < (rs2|0)){
-                            imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                            pc = pc + imm - 4|0;
-                        }
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x6A;
-                        continue;
-
-                    case 0x05:
-                        //bge
-                        if((rs1|0) >= (rs2|0)){
-                            imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                            pc = pc + imm - 4|0;
-                        }
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x6B;
-                        continue;
-
-                    case 0x06:
-                        //bltu
-                        if((rs1 >>> 0) < (rs2 >>> 0)){
-                            imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                            pc = pc + imm - 4|0;
-                        }
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x6C;
-                        continue;
-
-                    case 0x07:
-                        //bgeu
-                        if((rs1 >>> 0) >= (rs2 >>> 0)){
-                            imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                            pc = pc + imm - 4|0;
-                        }
-                        ram[(ppc - 4) >> 2] = ((ins >> 7) << 7) | 0x6D;
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x73:
-                //csrrw, csrrs, csrrc, csrrwi, csrrsi, csrrci, ecall, eret, ebreak, mrts, wfi
-                imm = (ins >>> 20);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                switch((ins >> 12)&0x7) {
-                    
-                    case 0x01:
-                        //csrrw
-                        r[((ins >> 5) & 0x7C) >> 2] = GetCSR(imm)|0;
-                        //if (rindex != ((ins >> 15) & 0x1F))
-                        SetCSR(imm, rs1);
-                        r[0] = 0;
-                        continue;
-
-                    case 0x02:
-                        //csrrs
-                        r[((ins >> 5) & 0x7C) >> 2] = GetCSR(imm)|0;
-                        SetCSR(imm, (GetCSR(imm)|0) | rs1);
-                        r[0] = 0;
-                        continue;
-
-                    case 0x03:
-                        //csrrc
-                        r[((ins >> 5) & 0x7C) >> 2] = GetCSR(imm)|0;
-                        SetCSR(imm, (GetCSR(imm)|0) & (~rs1));
-                        r[0] = 0;
-                        continue;
-
-                    case 0x05:
-                        //csrrwi
-                        r[((ins >> 5) & 0x7C) >> 2] = GetCSR(imm)|0;
-                        zimm = (ins >> 15) & 0x1F;
-                        if((zimm|0) != 0) SetCSR(imm, (zimm >> 0));
-                        r[0] = 0;
-                        continue;
-                        
-                    case 0x06:
-                        //csrrsi
-                        r[((ins >> 5) & 0x7C) >> 2] = GetCSR(imm)|0;
-                        zimm = (ins >> 15) & 0x1F;
-                        if((zimm|0) != 0) SetCSR(imm, (GetCSR(imm)|0) | (zimm >> 0));
-                        r[0] = 0;
-                        continue;
-
-                    case 0x07:
-                        //csrrci
-                        r[((ins >> 5) & 0x7C) >> 2] = GetCSR(imm)|0;
-                        zimm = (ins >> 15) & 0x1F;
-                        if((zimm|0) != 0) SetCSR(imm, (GetCSR(imm)|0) & ~(zimm >> 0));
-                        r[0] = 0;
-                        continue;
-                    
-                    case 0x00:
-                        //ecall, eret, ebreak, mrts, wfi
-                        current_privilege_level = (csr[(csrp + CSR_MSTATUS)>>2] & 0x06) >> 1;
-                        fence = ppc;
-                        switch((ins >> 20)&0xFFF) {
-                            case 0x00:
-                                //ecall
-                                pc = pcorigin + (ppc-ppcorigin)|0;
-                                switch(current_privilege_level|0)
-                                {
-                                    case 0x00: //PRV_U
-                                        Trap(CAUSE_ENVCALL_UMODE, pc - 4|0);
-                                        break;
-
-                                    case 0x01: //PRV_S
-                                        Trap(CAUSE_ENVCALL_SMODE, pc - 4|0);
-                                        break;
-
-                                    case 0x02: //PRV_H
-                                        Trap(CAUSE_ENVCALL_HMODE, pc - 4|0);
-                                        abort();
-                                        break;
-
-                                    case 0x03: //PRV_M
-                                        Trap(CAUSE_ENVCALL_MMODE, pc - 4|0);
-                                        break;
-                                    
-                                    default:
-                                        DebugMessage(ERROR_ECALL|0);
-                                        abort();
-                                        break;
-                                }
-                                continue;
-
-                            case 0x001:
-                                //ebreak
-                                pc = pcorigin + (ppc-ppcorigin)|0;
-                                Trap(CAUSE_BREAKPOINT, pc - 4|0);
-                                continue;
-
-                            case 0x100:
-                                //eret
-                                current_privilege_level = (csr[(csrp + CSR_MSTATUS)>>2] & 0x06) >> 1;
-                                pc = pcorigin + (ppc-ppcorigin)|0;
-                                if((current_privilege_level|0) < (PRV_S|0)) {
-                                    DebugMessage(ERROR_ERET_PRIV|0);
-                                    abort();
-                                    break;   
-                                }
-                                PopPrivilegeStack();
-
-                                switch(current_privilege_level|0)
-                                {
-                                    
-                                    case 0x01: //PRV_S
-                                        //DebugMessage("eret PRV_S -"+ utils.ToHex(ins));
-                                        pc = csr[(csrp + CSR_SEPC)>>2]|0;
-                                        break;
-
-                                    case 0x02: //PRV_H
-                                        //DebugMessage("Not supported eret PRV_H -"+ utils.ToHex(ins));
-                                        pc = csr[(csrp + CSR_HEPC)>>2]|0;
-                                        abort();
-                                        break;
-
-                                    case 0x03: //PRV_M
-                                        //DebugMessage("eret PRV_M -"+ utils.ToHex(ins));
-                                        pc = csr[(csrp + CSR_MEPC)>>2]|0;
-                                        break;
-                                    
-                                    default:
-                                        DebugMessage(ERROR_ERET|0);
-                                        abort();
-                                        break;
-                                }
-                                pc_change = 1;
-                                InvalidateTLB();
-                                continue;
-
-                            case 0x102:
-                                // wfi
-                                continue;
-
-                            case 0x305:
-                                //mrts
-                                pc = pcorigin + (ppc-ppcorigin)|0;    
-                                if((current_privilege_level|0) != (PRV_M|0)) {
-                                    DebugMessage(ERROR_MRTS|0);
-                                    abort();
-                                    break;   
-                                }
-                                csr[(csrp + CSR_MSTATUS)>>2] = (csr[(csrp + CSR_MSTATUS)>>2] & ~0x6) | 0x02; //Setting the Privilage level to Supervisor
-                                csr[(csrp + CSR_SBADADDR)>>2] = csr[(csrp + CSR_MBADADDR)>>2];
-                                csr[(csrp + CSR_SCAUSE)>>2] = csr[(csrp + CSR_MCAUSE)>>2];
-                                csr[(csrp + CSR_SEPC)>>2] = csr[(csrp + CSR_MEPC)>>2];
-                                pc = csr[(csrp + CSR_STVEC)>>2]|0;
-                                pc_change = 1;
-                                continue;
-
-                            case 0x101:
-                                //sfence.vm
-                                InvalidateTLB();
-                                continue;
-
-                            default:
-                                DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                                abort();
-                                break;
-
-                        }
-                        continue; 
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x07:
-                //flw,fld
-                switch((ins >> 12)&0x7) {
-                    
-                    case 0x02:
-                        //flw
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((float_read32tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (float_read32tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) break;
-
-                            float_read32tlb_index = paddr;
-                            float_read32tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        r[0] = ram[(ramp + paddr) >> 2]|0;
-                        f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = +ff[0];
-                        r[0] = 0;
-                        continue;
-
-                    case 0x03:
-                        //fld
-                        imm = (ins >> 20);
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((float_read64tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (float_read64tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            float_read64tlb_index = paddr;
-                            float_read64tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        fi[(fip + ((((ins >> 7) & 0x1F) + 0) << 2)) >> 2] = ram[(ramp + paddr + 0) >> 2]|0;
-                        fi[(fip + ((((ins >> 7) & 0x1F) + 1) << 2)) >> 2] = ram[(ramp + paddr + 4) >> 2]|0;
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        DebugMessage(ins|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x27:
-                //fsw, fsd
-                switch((ins >> 12)&0x7) {
-
-                    case 0x02:
-                        //fsw
-                        imm = (((ins >> 25) << 5) + ((ins >> 7) & 0x1F))|0;
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        ff[0] = f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3];
-                        if(!((float_store32tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (float_store32tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            float_store32tlb_index = paddr;
-                            float_store32tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        ram[(ramp + paddr) >> 2] = r[0]|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x03:
-                        //fsd
-                        imm = (((ins >> 25) << 5) + ((ins >> 7) & 0x1F))|0;
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        if(!((float_store64tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (float_store64tlb_entry ^ (rs1 + imm|0));
-                        else{
-
-                            paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                            if((paddr|0) == -1) continue;
-
-                            float_store64tlb_index = paddr;
-                            float_store64tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                        }
-                        ram[(ramp + paddr + 0) >> 2] = fi[(fip + ((((ins >> 20) & 0x1F) + 0) << 2)) >> 2]|0;
-                        ram[(ramp + paddr + 4) >> 2] = fi[(fip + ((((ins >> 20) & 0x1F) + 1) << 2)) >> 2]|0; 
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        DebugMessage(ins|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x53:
-                //fadd.s, fsub.s
-                switch((ins >> 25)&0x7F) {
-                    
-                    case 0x00:  //fadd.s
-                    case 0x01:  //fadd.d
-                        fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                        fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                        f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = fs1 + fs2;
-                        continue;
-
-                    case 0x04: //fsub.s 
-                    case 0x05: //fsub.d
-                        fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                        fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                        f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = fs1 - fs2;
-                        continue;
-
-                    case 0x50:
-                    case 0x51:
-                        //fcmp.s, fcmp.d
-                        fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                        fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                        switch((ins >> 12) & 0x7) {
-                            case 0x0:
-                                //fle
-                                if((+fs1) <= (+fs2)) r[((ins >> 5) & 0x7C) >> 2] = 1;
-                                else r[((ins >> 5) & 0x7C) >> 2] = 0;
-                                continue;
-
-                            case 0x1:
-                                //flt
-                                if((+fs1) < (+fs2)) r[((ins >> 5) & 0x7C) >> 2] = 1;
-                                else r[((ins >> 5) & 0x7C) >> 2] = 0;
-                                continue;
-
-                            case 0x2:
-                                //fle
-                                if((+fs1) == (+fs2)) r[((ins >> 5) & 0x7C) >> 2] = 1;
-                                else r[((ins >> 5) & 0x7C) >> 2] = 0;
-                                continue;
-
-                            default:
-                                DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                                DebugMessage(ins|0);
-                                abort();
-                                break;
-                        }
-                        continue;
-
-                    case 0x60:
-                        //fcvt.w.s
-                        r[((ins >> 5) & 0x7C) >> 2] = (~~+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                        continue;
-
-                    case 0x68: //fcvt.s.w
-                    case 0x69:
-                        //fcvt.d.w
-                        f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = (+~~r[(((ins >> 15) & 0x1F) << 2) >> 2]);
-                        continue;
-
-                    case 0x08: //fmul.s
-                    case 0x09: //fmul.d
-                        fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                        fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                        f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = (+mul(fs1,fs2));
-                        continue;
- 
-                    case 0x10: // single precision
-                    case 0x11: // double precision
-                        //fsgnj
-                        fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                        fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                        switch((ins >> 12) & 7) {
-                            case 0:
-                                //fsgnj.d, also used for fmv.d
-                                f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = ((+fs2)<(+0))?-(+MathAbs(+fs1)):(+MathAbs(+fs1));
-                                continue;
- 
-                            case 1:
-                                //fsgnjn.d
-                                f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = ((+fs2)<(+0))?+MathAbs(+fs1):-(+MathAbs(+fs1));
-                                continue;
- 
-                            case 3:
-                                //fsgnjx.d
-                                f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = 
-                                    ( 
-                                    (((+fs2)<(+0)) & ((+fs1)<(+0)) ) | 
-                                    (((+fs2)>(+0)) & ((+fs1)>(+0)) )
-                                    )?-(+MathAbs(+fs1)):+MathAbs(+fs1);
-                                continue;
- 
-                            default:
-                                DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                                DebugMessage(ins|0);
-                                abort();
-                        }
-                        continue;
-
-                    case 0x61:
-                        //fcvt.w.d
-                        r[((ins >> 5) & 0x7C) >> 2] = (~~+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                        continue;
-
-                    case 0x78:
-                        //fmv.s.x
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        r[0] = rs1;
-                        f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = +ff[0];
-                        r[0] = 0;
-                        continue;
-
-
-                    default:
-                        DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                        DebugMessage(ins|0);
-                        abort();
-                        break;
-                }
-                continue;
-
-            case 0x43:
-                //fmadd.d,fmadd.s
-                fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                fs3 = (+f[(fp + (((ins >> 27) & 0x1F) << 3)) >> 3]);
-                f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = fs1 * fs2 + fs3;
-                continue;
- 
-            case 0x47:
-                //fmsub.d,fmsub.s
-                fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                fs3 = (+f[(fp + (((ins >> 27) & 0x1F) << 3)) >> 3]);
-                f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = fs1 * fs2 - fs3;
-                continue;
- 
-            case 0x4B:
-                //fnmadd.d,fnmadd.s
-                fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                fs3 = (+f[(fp + (((ins >> 27) & 0x1F) << 3)) >> 3]);
-                f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = -(fs1 * fs2 + fs3);
-                continue;
- 
-            case 0x4F:
-                //fnmsub.d,fnmsub.s
-                fs1 = (+f[(fp + (((ins >> 15) & 0x1F) << 3)) >> 3]);
-                fs2 = (+f[(fp + (((ins >> 20) & 0x1F) << 3)) >> 3]);
-                fs3 = (+f[(fp + (((ins >> 27) & 0x1F) << 3)) >> 3]);
-                f[(fp + (((ins >> 7) & 0x1F) << 3)) >> 3] = -(fs1 * fs2 - fs3);
-                continue;
-
-            case 0x2F:
-                //amoswap, amoadd, amoxor, amoand, amoor, amomin, amomax, amominu, amomaxu
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                switch((ins >> 27)&0x1F) {
-                    
-                    case 0x01:
-                        //amoswap
-                        paddr = TranslateVM(rs1|0, VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        paddr = TranslateVM(rs1|0, VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = rs2|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x00:
-                        //amoadd
-                        paddr = TranslateVM(rs1|0, VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = ((r[((ins >> 5) & 0x7C) >> 2]|0) + (rs2|0))|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x04:
-                        //amoxor
-                        paddr = TranslateVM(rs1|0, VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = ((r[((ins >> 5) & 0x7C) >> 2]|0) ^ (rs2|0))|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x0C:
-                        //amoand
-                        paddr = TranslateVM(rs1|0, VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = ((r[((ins >> 5) & 0x7C) >> 2]|0) & (rs2|0))|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x08:
-                        //amoor
-                        paddr = TranslateVM(rs1|0, VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = ((r[((ins >> 5) & 0x7C) >> 2]|0) | (rs2|0))|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x10:
-                        //amomin
-                        paddr = TranslateVM(rs1|0, VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        if((rs2 >> 0) > (r[((ins >> 5) & 0x7C) >> 2] >> 0)) r[0] = r[((ins >> 5) & 0x7C) >> 2];
-                        else r[0] = rs2;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = r[0]|0;
-                        r[0] = 0;
-                        continue;
-
-                   case 0x14:
-                        //amomax
-                        paddr = TranslateVM(rs1|0,VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        if((rs2 >> 0) < (r[((ins >> 5) & 0x7C) >> 2] >> 0)) r[0] = r[((ins >> 5) & 0x7C) >> 2];
-                        else r[0] = rs2;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = r[0]|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x18:
-                        //amominu
-                        paddr = TranslateVM(rs1|0,VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        if((rs2 >>> 0) > (r[((ins >> 5) & 0x7C) >> 2] >>> 0)) r[0] = r[((ins >> 5) & 0x7C) >> 2];
-                        else r[0] = rs2;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = r[0]|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x1C:
-                        //amomaxu
-                        paddr = TranslateVM(rs1|0,VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        if((rs2 >>> 0) < (r[((ins >> 5) & 0x7C) >> 2] >>> 0)) r[0] = r[((ins >> 5) & 0x7C) >> 2];
-                        else r[0] = rs2;
-                        paddr = TranslateVM(rs1|0,VM_WRITE)|0;
-                        if((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = r[0]|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x02:
-                        //lr.d
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        paddr = TranslateVM(rs1|0,VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                        amoaddr = rs1;
-                        amovalue = r[((ins >> 5) & 0x7C) >> 2]|0;
-                        r[0] = 0;
-                        continue;
-
-                    case 0x03:
-                        //sc.d
-                        rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                        rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                        if((rs1|0) != (amoaddr|0)) {
-                            r[((ins >> 5) & 0x7C) >> 2] = 0x01;
-                            continue;
-                        }
-                        paddr = TranslateVM(rs1, VM_READ)|0;
-                        if((paddr|0) == -1) break;
-                        if((ram[(ramp + paddr) >> 2]|0) != (amovalue|0)) {
-                            r[((ins >> 5) & 0x7C) >> 2] = 0x01;
-                            continue;
-                        }
-                        r[((ins >> 5) & 0x7C) >> 2] = 0x00;
-                        paddr = TranslateVM(rs1, VM_WRITE)|0;
-                        if ((paddr|0) == -1) break;
-                        ram[(ramp + paddr) >> 2] = rs2|0;
-                        r[0] = 0;
-                        continue;
-
-                    default:
-                        DebugMessage(ERROR_ATOMIC_INSTRUCTION|0);
-                        abort();
-                        break;
-
-                }
-                continue;
-
-            case 0x0F:
-                //fence
-                continue;
-
-            //custom opcodes defined to make instructions take the faster route
-            case 0x74:
-                //lb
-                imm = (ins >> 20);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if(!((read8tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read8tlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                    if((paddr|0) == -1) continue;
-
-                    read8tlb_index = paddr;
-                    read8tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                r[((ins >> 5) & 0x7C) >> 2] = ((ram8[(ramp + paddr) >> 0]) << 24) >> 24;
-                continue;
-
-            case 0x75:
-                //lh
-                imm = (ins >> 20);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if(!((read16tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read16tlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                    if((paddr|0) == -1) continue;
-
-                    read16tlb_index = paddr;
-                    read16tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                r[((ins >> 5) & 0x7C) >> 2] = ((ram16[(ramp + paddr) >> 1]) << 16) >> 16;
-                continue;
-
-            case 0x76:
-                //lw
-                imm = (ins >> 20);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if ((rs1+imm) & 3) {
-                     DebugMessage(ERROR_LOAD_WORD|0);
-                     abort();
-                }
-                if(!((read32tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read32tlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                    if((paddr|0) == -1) continue;
-
-                    read32tlb_index = paddr;
-                    read32tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                r[((ins >> 5) & 0x7C) >> 2] = ram[(ramp + paddr) >> 2]|0;
-                continue;
-
-            case 0x77:
-                //lbu
-                imm = (ins >> 20);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if(!((read8utlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read8utlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                    if((paddr|0) == -1) continue;
-
-                    read8utlb_index = paddr;
-                    read8utlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                r[((ins >> 5) & 0x7C) >> 2] = (ram8[(ramp + paddr) >> 0]) & 0xFF;
-                continue;
-
-            case 0x78:
-                //lhu
-                imm = (ins >> 20);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if(!((read16utlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (read16utlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_READ)|0;
-                    if((paddr|0) == -1) continue;
-
-                    read16utlb_index = paddr;
-                    read16utlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                r[((ins >> 5) & 0x7C) >> 2] = (ram16[(ramp + paddr) >> 1]) & 0xFFFF;
-                continue;
-
-            case 0x79:
-                //sb
-                imm = ((ins >> 25) << 5) | ((ins >> 7) & 0x1F);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if(!((store8tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (store8tlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_WRITE)|0;
-                    if((paddr|0) == -1) continue;
-
-                    store8tlb_index = paddr;
-                    store8tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                ram8[(ramp + paddr) >> 0] = (r[((ins >> 18) & 0x7C) >> 2] & 0xFF);
-                continue;
-
-            case 0x7A:
-                //sh
-                imm = ((ins >> 25) << 5) | ((ins >> 7) & 0x1F);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if(!((store16tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (store16tlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_WRITE)|0;
-                    if((paddr|0) == -1) continue;
-
-                    store16tlb_index = paddr;
-                    store16tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                ram16[(ramp + paddr) >> 1] = (r[((ins >> 18) & 0x7C) >> 2] & 0xFFFF);
-                continue;
-
-            case 0x7B:
-                //sw
-                imm = ((ins >> 25) << 5) | ((ins >> 7) & 0x1F);
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                if ((rs1+imm) & 3) {
-                     DebugMessage(ERROR_STORE_WORD|0);
-                     abort();
-                }
-                if(!((store32tlb_index ^ (rs1 + imm|0)) & 0xFFFFF000)) paddr = (store32tlb_entry ^ (rs1 + imm|0));
-                else{
-
-                    paddr = TranslateVM(rs1 + imm|0, VM_WRITE)|0;
-                    if((paddr|0) == -1) continue;
-
-                    store32tlb_index = paddr;
-                    store32tlb_entry = ((paddr ^ (rs1 + imm|0)) & 0xFFFFF000);
-                }
-                ram[(ramp + paddr) >> 2] = r[((ins >> 18) & 0x7C) >> 2]|0;
-                continue;
-
-            case 0x68:
-                //beq
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                fence = ppc;
-                pc_change = 1;
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                if((rs1|0) == (rs2|0)){
-                    imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                    pc = pc + imm - 4|0;
-                }
-                continue;
-
-            case 0x69:
-                //bne
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                fence = ppc;
-                pc_change = 1;
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                if((rs1|0) != (rs2|0)){
-                    imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                    pc = pc + imm - 4|0;
-                }
-                continue;
-
-            case 0x6A:
-                //blt
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                fence = ppc;
-                pc_change = 1;
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                if((rs1|0) < (rs2|0)){
-                    imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                    pc = pc + imm - 4|0;
-                }
-                continue;
-
-            case 0x6B:
-                //bge
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                fence = ppc;
-                pc_change = 1;
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                if((rs1|0) >= (rs2|0)){
-                    imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                    pc = pc + imm - 4|0;
-                }
-                continue;
-
-            case 0x6C:
-                //bltu
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                fence = ppc;
-                pc_change = 1;
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                if((rs1 >>> 0) < (rs2 >>> 0)){
-                    imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                    pc = pc + imm - 4|0;
-                }
-                continue;
-
-            case 0x6D:
-                //bgeu
-                pc = pcorigin + (ppc-ppcorigin)|0;
-                fence = ppc;
-                pc_change = 1;
-                rs1 = r[(((ins >> 15) & 0x1F) << 2) >> 2]|0;
-                rs2 = r[((ins >> 18) & 0x7C) >> 2]|0;
-                if((rs1 >>> 0) >= (rs2 >>> 0)){
-                    imm =  ((((ins >> 31) << 11) | (((ins >> 25) & 0x3F) << 4) | ((ins >> 8) & 0x0F) | (((ins >> 7) & 0x01) << 10)) << 1 );
-                    pc = pc + imm - 4|0;
-                }
-                continue;
-
-
-            default:
-                DebugMessage(ERROR_INSTRUCTION_NOT_FOUND|0);
-                DebugMessage(ins|0);
-                abort();
-                break;
-        } // end of switch
-
-    } else // fence
-    {
-
-            if(!(pc_change|0)) pc = pcorigin + (ppc-ppcorigin)|0;
-
-            dsteps = dsteps - ((ppc-ppcorigin) >> 2)|0;
-            if ((dsteps|0) < 0) {
-
-                dsteps = dsteps + 64|0;
-                steps =  steps - 64|0;
-
-                if((steps|0) < 0) return 0;
-
-                delta = (csr[(csrp + CSR_MTIMECMP)>>2]|0) - ticks | 0;
-                delta = delta + ((delta|0)<0?0xFFFFFFFF:0x0) | 0;
-                ticks = ticks + clockspeed| 0;
-                if ((delta|0) < (clockspeed|0)) {
-                    csr[(csrp + CSR_MIP)>>2] = csr[(csrp + CSR_MIP)>>2] | 0x20;
-                }
-
-                // check for interrupts
-                current_privilege_level = (csr[(csrp + CSR_MSTATUS)>>2] & 0x06) >> 1;
-
-                interrupts = csr[(csrp + CSR_MIE)>>2] & csr[(csrp + CSR_MIP)>>2];
-                ie = csr[(csrp + CSR_MSTATUS)>>2] & 0x01;
-
-                if (((current_privilege_level|0) < 3) | (((current_privilege_level|0) == 3) & (ie|0))) {
-                    if (((interrupts|0) & 0x8)) {
-                        Trap(CAUSE_SOFTWARE_INTERRUPT, pc);
-                        continue;
-                    } else
-                    if (queue_status|0) {
-                        Trap(CAUSE_HOST_INTERRUPT, pc);
-                        queue_status = 0;
-                        continue;
-                    }
-                }
-                if (((current_privilege_level|0) < 1) | (((current_privilege_level|0) == 1) & (ie|0))) {
-                    if (((interrupts|0) & 0x2)) {
-                        Trap(CAUSE_SOFTWARE_INTERRUPT, pc);
-                        continue;
-                    } else
-                    if (((interrupts|0) & 0x20)) {
-                         Trap(CAUSE_TIMER_INTERRUPT, pc);
-                         continue;
-                    }
-                }
-            } // dsteps
-
-            // get new instruction pointer
-            if ((instlb_index ^ pc) & 0xFFFFF000) {
-                ppc = TranslateVM(pc,VM_FETCH)|0;
-                if((ppc|0) == -1) {
-                    ppc = fence;
-                    continue;
-                }
-                instlb_index = pc;
-                instlb_entry = ((ppc ^ pc) & 0xFFFFF000);
-            }
-
-            ppc = ramp + (instlb_entry ^ pc)| 0;
-            ppcorigin = ppc;
-            pcorigin = pc;
-            fence  = ((ppc >> 12) + 1) << 12; // next page
-            pc_change = 0;
-
-        } // end of fence
-
-    } // main loop
-
-    return 0;
-};
-
-return {
-
-    Reset: Reset,
-    Init: Init,
-    InvalidateTLB: InvalidateTLB,
-    Step: Step,
-    TranslateVM: TranslateVM,
-    GetCSR: GetCSR,
-    SetCSR: SetCSR,
-    Trap: Trap,
-    MemTrap: MemTrap,
-    PopPrivilegeStack: PopPrivilegeStack,
-    PushPrivilegeStack: PushPrivilegeStack,
-    IMul: IMul,
-    UMul: UMul,
-    SUMul: SUMul,
-    CheckVMPrivilege: CheckVMPrivilege,  
-    GetTimeToNextInterrupt: GetTimeToNextInterrupt,
-    ProgressTime: ProgressTime,
-    GetTicks: GetTicks,
-    AnalyzeImage: AnalyzeImage,
-    CheckForInterrupt: CheckForInterrupt,
-    RaiseInterrupt: RaiseInterrupt,
-    ClearInterrupt: ClearInterrupt
-};
-
-}
-
-module.exports = DynamicCPU;
-
-},{"../messagehandler":28,"../utils":43,"./disassemble":34}],36:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],41:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- CPU ------------------------
 // -------------------------------------------------
@@ -16476,7 +15906,7 @@ return {
 
 module.exports = FastCPU;
 
-},{"../messagehandler":28,"../utils":43,"./disassemble":34}],37:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48,"./disassemble":40}],42:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- HTIF -----------------------
 // -------------------------------------------------
@@ -16495,7 +15925,6 @@ function StringToBytes(str, ram, offset) {
     }
     ram.Write8(offset+str.length, 0);
 }
-
 
 // -------------------------------------------------
 
@@ -16523,7 +15952,7 @@ function HTIFFB(ram, SendFunc) {
 
     this.OnGetFB = function() {
         if (this.paddr == 0x0) return;
-        message.Send("GetFB", this.GetBuffer() );
+        //message.Send("GetFB", this.GetBuffer() );
     }
 
     this.GetBuffer = function () {
@@ -16548,11 +15977,10 @@ function HTIFConsole(ram, SendFunc) {
     this.identify = "bcd";
     this.Send = SendFunc;
     this.charqueue = [];
-    this.readpresent = false;
+    this.readpresent = true;
 
     this.Read = function(value) {
-        //message.Debug("Read: " + value);
-        //this.Send(1, 0, 1);
+        //message.Debug("Read char: " + value);
         this.readpresent = true;
         if (this.charqueue.length == 0) return;
         this.Send(1, 0, this.charqueue.shift());
@@ -16560,14 +15988,14 @@ function HTIFConsole(ram, SendFunc) {
     }
 
     this.Write = function(value) {
-        this.ram.Write8(0x90000000 >> 0, value);
-        if (value == 0xA) this.ram.Write8(0x90000000 >> 0, 0xD);
-        this.Send(1, 1, 1);
+        this.ram.Write8(0x03000000 >> 0, value);
+        if (value == 0xA) this.ram.Write8(0x03000000 >> 0, 0xD);
+        //this.Send(1, 1, 1);
     }
 
     this.ReceiveChar = function(c) {
         this.charqueue = this.charqueue.concat(c);
-
+        //message.Debug("chars received: " + c);
         if (!this.readpresent) return;
         this.Send(1, 0, this.charqueue.shift());
         this.readpresent = false;
@@ -16590,7 +16018,7 @@ function HTIFSyscall(ram, SendFunc) {
         if((value>>>0) > 0x100) {
             this.syscallHandler.HandleSysCall(value);
         } else {
-            this.ram.Write8(0x90000000 >> 0, value+0x30);
+            this.ram.Write8(0x03000000 >> 0, value+0x30);
             message.Debug("return value: " + value);
             message.Abort();
        }
@@ -16607,7 +16035,7 @@ function HTIFDisk(ram, SendFunc) {
     this.buffer = new Uint8Array(1024*1024);
     this.identify = "disk size="+this.buffer.length;
     
-    utils.LoadBinaryResourceII("../sys/riscv/ext2fsimage.bz2", 
+    utils.LoadBinaryResourceII("../riscv-sys/ext2fsimage.bz2", 
     function(buffer) {
         this.buffer = new Uint8Array(20*1024*1024);
 
@@ -16630,7 +16058,6 @@ function HTIFDisk(ram, SendFunc) {
         }
         this.Send(2, 0, tag);
     }
-
 
     this.Write = function(value) {
         var addr   = this.ram.Read32(value + 0);
@@ -16657,8 +16084,8 @@ function HTIF(ram, irqdev) {
 
     this.device.push( new HTIFSyscall(this.ram, this.Send.bind(this)) ); // dev 0
     this.device.push( new HTIFConsole(this.ram, this.Send.bind(this)) ); // dev 1
-    this.device.push( new HTIFDisk   (this.ram, this.Send.bind(this)) ); // dev 2
-    this.device.push( new HTIFFB     (this.ram, this.Send.bind(this)) ); // dev 3
+    //this.device.push( new HTIFDisk   (this.ram, this.Send.bind(this)) ); // dev 2
+    //this.device.push( new HTIFFB     (this.ram, this.Send.bind(this)) ); // dev 3
 
     this.devid = 0x0;
     this.cmd = 0x0;
@@ -16672,79 +16099,89 @@ function HTIF(ram, irqdev) {
 HTIF.prototype.Send = function(devid, cmd, data) {
     //message.Debug("Send " + devid + " " + cmd + " " + data);
     this.fromhostqueue.push({
-        devid: devid, 
-        cmd: cmd, 
+        devid: devid,
+        cmd: cmd,
         data: data});
 
     if (this.fromhostqueue.length == 1)
         this.reg_devcmdfromhost =
-            (this.fromhostqueue[0].devid << 16) | this.fromhostqueue[0].cmd;
+            (this.fromhostqueue[0].devid << 24) | (this.fromhostqueue[0].cmd << 16);
 
-    this.irqdev.RaiseInterrupt(0xF);
+    this.irqdev.RaiseInterrupt(0x1);
 }
 
 // -------------------------------------------------
 
 HTIF.prototype.ReadDEVCMDToHost = function() {
-    return (this.devid << 16) | this.cmd;
+    //message.Debug("ReadDEVCMDToHost 0x0");
+    // ready to receive data
+    return 0x0;
 }
-
-HTIF.prototype.WriteDEVCMDToHost = function(value) {
-    this.devid = value >>> 16;
-    this.cmd = value & 0xFFFF;
-}
-
-// -------------------------------------------------
-
-HTIF.prototype.WriteDEVCMDFromHost = function(value) {
-    this.reg_devcmdfromhost = value;
-    return;
-}
-
-HTIF.prototype.ReadDEVCMDFromHost = function() {
-    if (this.fromhostqueue.length != 0)
-        return this.reg_devcmdfromhost;
-    else
-        return 0x0;
-}
-
-// -------------------------------------------------
 
 HTIF.prototype.ReadToHost = function() {
-    return 0; // always immediate response
+    //message.Debug("ReadToHost 0x0");
+    // ready to receive data
+    return 0x0;
+}
+
+// -------------------------------------------------
+
+HTIF.prototype.WriteDEVCMDToHost = function(value) {
+    //message.Debug("WriteDEVCMDToHost " + utils.ToHex(value));
+    this.devid = value >>> 24;
+    this.cmd = (value >> 16) & 0xFF;
 }
 
 HTIF.prototype.WriteToHost = function(value) {
+    //message.Debug("WriteToHost dev:" + this.devid + " cmd:" + this.cmd + " data:" + utils.ToHex(value));
     this.reg_tohost = value|0;
     this.HandleRequest();
 }
 
 // -------------------------------------------------
 
+HTIF.prototype.ReadDEVCMDFromHost = function() {
+    //message.Debug("ReadDEVCMDFromHost");
+    if (this.fromhostqueue.length != 0)
+        return this.reg_devcmdfromhost;
+    else
+        return 0x0;
+}
+
 HTIF.prototype.ReadFromHost = function() {
     //message.Debug("ReadFromHost " + this.fromhostqueue.length);
+   
     if (this.fromhostqueue.length != 0)
         return this.fromhostqueue[0].data; 
     else
         return 0x0;
 }
 
+// -------------------------------------------------
+
+HTIF.prototype.WriteDEVCMDFromHost = function(value) {
+    //message.Debug("WriteDEVCMDFromHost: " + value);
+    this.reg_devcmdfromhost = value;
+    return;
+}
+
 HTIF.prototype.WriteFromHost = function(value) {
-    //message.Debug("WriteFromHost: " + value);
-    //if (value == 1) message.Abort();
-    if ((value == 0) && (this.reg_devcmdfromhost == 0))
-    {
+    //message.Debug("WriteFromHost data:" + value);
+
+    if ((value == 0) && (this.reg_devcmdfromhost == 0)) {
         this.fromhostqueue.shift();
 
         if (this.fromhostqueue.length > 0) {
             this.reg_devcmdfromhost =
-                (this.fromhostqueue[0].devid << 16) | this.fromhostqueue[0].cmd;
-            this.irqdev.RaiseInterrupt(0xF);
+                (this.fromhostqueue[0].devid << 24) | (this.fromhostqueue[0].cmd << 16);
+            this.irqdev.RaiseInterrupt(0x1);
+        } else {
+            this.irqdev.ClearInterrupt(0x1);
         }
     }
 }
 
-// -------------------------------------------------
+// ------------------------------------------------
 
 HTIF.prototype.IsQueueEmpty = function() {
     return (this.fromhostqueue.length == 0)?true:false;
@@ -16799,7 +16236,7 @@ HTIF.prototype.HandleRequest = function() {
 
 module.exports = HTIF;
 
-},{"../bzip2":2,"../messagehandler":28,"../utils":43,"./syscalls":40}],38:[function(require,module,exports){
+},{"../bzip2":2,"../messagehandler":33,"../utils":48,"./syscalls":45}],43:[function(require,module,exports){
 /* this is a unified, abstract interface (a facade) to the different
  * CPU implementations
  */
@@ -16812,7 +16249,6 @@ var imul = require('../imul');
 // CPUs
 var SafeCPU = require('./safecpu');
 var FastCPU = require('./fastcpu');
-var DynamicCPU = require('./dynamiccpu');
 
 var stdlib = {
     Int32Array : Int32Array,
@@ -16856,11 +16292,6 @@ function createCPU(cpuname, ram, htif, heap, ncores) {
         cpu.Init();
         return cpu;
     }
-    else if (cpuname === "dynamic") {
-        cpu = DynamicCPU(stdlib, foreign, heap);
-        cpu.Init();
-        return cpu;
-    }
     throw new Error("invalid CPU name:" + cpuname);
 }
 
@@ -16885,7 +16316,7 @@ CPU.prototype.toString = function() {
     str += "Current state of the machine\n";
 
 
-    if (this.cpu.pc) {
+    if (typeof this.cpu.pc != 'undefined') {
         str += "PC: " + utils.ToHex(this.cpu.pc) + "\n"; 
     } else {
         str += "PC: " + utils.ToHex(this.cpu.GetPC()) + "\n"; 
@@ -16925,7 +16356,7 @@ forwardedMethods.forEach(function(m) {
 
 module.exports = CPU;
 
-},{"../imul":27,"../messagehandler":28,"../utils":43,"./dynamiccpu":35,"./fastcpu":36,"./safecpu":39}],39:[function(require,module,exports){
+},{"../imul":30,"../messagehandler":33,"../utils":48,"./fastcpu":41,"./safecpu":44}],44:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- CPU ------------------------
 // -------------------------------------------------
@@ -16935,114 +16366,153 @@ var message = require('../messagehandler');
 var utils = require('../utils');
 var DebugIns = require('./disassemble');
 
-var PRV_U = 0x00;
-var PRV_S = 0x01;
-var PRV_H = 0x02;
-var PRV_M = 0x03;
+var PRV_U = 0x00;  // user mode
+var PRV_S = 0x01;  // supervisor mode
+var PRV_H = 0x02;  // hypervisor mode
+var PRV_M = 0x03;  // machine mode
 
 var VM_READ  = 0;
 var VM_WRITE = 1;
 var VM_FETCH = 2;
 
-var CAUSE_TIMER_INTERRUPT          = (1<<31) | 0x01;
-var CAUSE_HOST_INTERRUPT           = (1<<31) | 0x02;
-var CAUSE_SOFTWARE_INTERRUPT       = (1<<31) | 0x00;
-var CAUSE_INSTRUCTION_ACCESS_FAULT = 0x01;
-var CAUSE_ILLEGAL_INSTRUCTION      = 0x02;
-var CAUSE_BREAKPOINT               = 0x03;
-var CAUSE_LOAD_ACCESS_FAULT        = 0x05;
-var CAUSE_STORE_ACCESS_FAULT       = 0x07;
-var CAUSE_ENVCALL_UMODE            = 0x08;
-var CAUSE_ENVCALL_SMODE            = 0x09;
-var CAUSE_ENVCALL_HMODE            = 0x0A;
-var CAUSE_ENVCALL_MMODE            = 0x0B;
+var CAUSE_MISALIGNED_FETCH    = 0x0;
+var CAUSE_FETCH_ACCESS        = 0x1;
+var CAUSE_ILLEGAL_INSTRUCTION = 0x2;
+var CAUSE_BREAKPOINT          = 0x3;
+var CAUSE_MISALIGNED_LOAD     = 0x4;
+var CAUSE_LOAD_ACCESS         = 0x5;
+var CAUSE_MISALIGNED_STORE    = 0x6;
+var CAUSE_STORE_ACCESS        = 0x7;
+var CAUSE_USER_ECALL          = 0x8;
+var CAUSE_SUPERVISOR_ECALL    = 0x9;
+var CAUSE_HYPERVISOR_ECALL    = 0xa;
+var CAUSE_MACHINE_ECALL       = 0xb;
+var CAUSE_FETCH_PAGE_FAULT    = 0xc;
+var CAUSE_LOAD_PAGE_FAULT     = 0xd;
+var CAUSE_STORE_PAGE_FAULT    = 0xf;
 
+var MSTATUS_UIE     = 0x00000001; // interrupt enable bits
+var MSTATUS_SIE     = 0x00000002;
+var MSTATUS_HIE     = 0x00000004;
+var MSTATUS_MIE     = 0x00000008; // machine
+var MSTATUS_UPIE    = 0x00000010; // interrupt-enable bit active prior to the trap
+var MSTATUS_SPIE    = 0x00000020;
+var MSTATUS_HPIE    = 0x00000040;
+var MSTATUS_MPIE    = 0x00000080;
+var MSTATUS_SPP     = 0x00000100; // previous privilege  mode
+var MSTATUS_HPP     = 0x00000600;
+var MSTATUS_MPP     = 0x00001800; // privilege mode
+var MSTATUS_FS      = 0x00006000; // tracking current state of floating point unit
+var MSTATUS_XS      = 0x00018000; // status of user-mode extensions
+var MSTATUS_MPRV    = 0x00020000; // priviege level at which loads and stores execute
+var MSTATUS_SUM     = 0x00040000; // supervisor may access user memory
+var MSTATUS_MXR     = 0x00080000; // make executable readable
+var MSTATUS_TVM     = 0x00100000;
+var MSTATUS_TW      = 0x00200000;
+var MSTATUS_TSR     = 0x00400000;
+var MSTATUS_SD      = 0x80000000;
 
-var CSR_CYCLES = 0xC00;
-var CSR_CYCLEW = 0x900;
+var SPTBR_MODE_OFF  = 0;
+var SPTBR_MODE_SV32 = 1;
+var SPTBR32_MODE = 0x80000000;
+var SPTBR32_ASID = 0x7FC00000;
+var SPTBR32_PPN  = 0x003FFFFF;
 
+// page table entry (PTE) fields
+var PTE_V     = 0x001 // Valid
+var PTE_R     = 0x002 // Read
+var PTE_W     = 0x004 // Write
+var PTE_X     = 0x008 // Execute
+var PTE_U     = 0x010 // User
+var PTE_G     = 0x020 // Global
+var PTE_A     = 0x040 // Accessed
+var PTE_D     = 0x080 // Dirty
+var PTE_SOFT  = 0x300 // Reserved for Software
 
-var CSR_FFLAGS    = 0x1;
-var CSR_FRM       = 0x2;
-var CSR_FCSR      = 0x3;
+var IRQ_S_SOFT  = 1;
+var IRQ_H_SOFT  = 2;
+var IRQ_M_SOFT  = 3;
+var IRQ_S_TIMER = 5;
+var IRQ_H_TIMER = 6;
+var IRQ_M_TIMER = 7;
+var IRQ_S_EXT   = 9;
+var IRQ_H_EXT   = 10;
+var IRQ_M_EXT   = 11;
+var IRQ_COP     = 12; // computer operating properly
+var IRQ_HOST    = 13;
 
-var CSR_SSTATUS   = 0x100;
-var CSR_STVEC     = 0x101;
-var CSR_SIE       = 0x104;
-var CSR_STIMECMP  = 0x121;
-var CSR_SSCRATCH  = 0x140;
-var CSR_SEPC      = 0x141;
-var CSR_SIP       = 0x144;
-var CSR_SPTBR     = 0x180;
-var CSR_SASID     = 0x181;
+var MIP_SSIP = (1 << IRQ_S_SOFT);
+var MIP_HSIP = (1 << IRQ_H_SOFT);
+var MIP_MSIP = (1 << IRQ_M_SOFT);
+var MIP_STIP = (1 << IRQ_S_TIMER);
+var MIP_HTIP = (1 << IRQ_H_TIMER);
+var MIP_MTIP = (1 << IRQ_M_TIMER);
+var MIP_SEIP = (1 << IRQ_S_EXT);
+var MIP_HEIP = (1 << IRQ_H_EXT);
+var MIP_MEIP = (1 << IRQ_M_EXT);
 
-var CSR_HEPC      = 0x241;
+// User CSRs standard read/write
+var CSR_FFLAGS    = 0x001; // Floating-Point Accrued Exceptions
+var CSR_FRM       = 0x002; // Floating-Point Dynamic Rounding Mode
+var CSR_FCSR      = 0x003; // Floating-Point Control and Status Register
 
-var CSR_MSTATUS   = 0x300;
-var CSR_MTVEC     = 0x301;
-var CSR_MTDELEG   = 0x302;
-var CSR_MIE       = 0x304;
-var CSR_MTIMECMP  = 0x321;
-var CSR_MTIMECMPH = 0x361;
-var CSR_MEPC      = 0x341;
-var CSR_MSCRATCH  = 0x340;
-var CSR_MCAUSE    = 0x342;
-var CSR_MBADADDR  = 0x343;
-var CSR_MIP       = 0x344;
-var CSR_MTOHOST_TEMP = 0x345; // terminal output, temporary for the patched pk.
+// Supervisor CSRs standard read/write
+var CSR_SSTATUS    = 0x100; // Supervisor status register
+var CSR_SIE        = 0x104; // Supervisor interrupt-enable register
+var CSR_STVEC      = 0x105; // Supervisor trap handler base address.
+var CSR_SCOUNTEREN = 0x106; // machine counter enable register (supervisor)
+var CSR_SSCRATCH   = 0x140; // Scratch register for supervisor trap handlers.
+var CSR_SEPC       = 0x141; // Supervisor exception program counter
+var CSR_SCAUSE     = 0x142; // Supervisor trap cause
+var CSR_SBADADDR   = 0x143; // Supervisor bad address
+var CSR_SIP        = 0x144; // Supervisor interrupt pending
+var CSR_SPTBR      = 0x180; // Page-table base register
 
-var CSR_MTIME     = 0x701;
-var CSR_MTIMEH    = 0x741;
+// Hypervisor CSR standard read/write
+var CSR_HEPC      = 0x241; // Hypervisor exception program counte
+
+// Machine CSRs standard read/write
+var CSR_MSTATUS   = 0x300; // Machine status register
+var CSR_MISA      = 0x301; // ISA and extensions supported
+var CSR_MEDELEG   = 0x302; // Machine exception delegation register.
+var CSR_MIDELEG   = 0x303; // Machine interrupt delegation register.
+var CSR_MIE       = 0x304; // Machine interrupt-enable register
+var CSR_MTVEC     = 0x305; // Machine trap-handler base address.
+
+var CSR_MCOUNTEREN = 0x306; // machine counter enable register (user)
+
+var CSR_MSCRATCH  = 0x340; // Scratch register for machine trap handlers
+var CSR_MEPC      = 0x341; // Machine exception program counter
+var CSR_MCAUSE    = 0x342; // Machine trap cause
+var CSR_MBADADDR  = 0x343; // Machine bad address
+var CSR_MIP       = 0x344; // Machine interrupt pending
+
+var CSR_PMPCFG0   = 0x3a0;
+var CSR_PMPADDR0  = 0x3b0;
+
+// Machine CSRs standard read/write and unknown
 var CSR_MRESET    = 0x782;
 var CSR_SEND_IPI  = 0x783;
 
-var CSR_MTOHOST         = 0x780;
-var CSR_MFROMHOST       = 0x781;
-var CSR_MDEVCMDTOHOST   = 0x790; // special
-var CSR_MDEVCMDFROMHOST = 0x791; // special
+// debug tdata1
+var CSR_TDATA1  = 0x7A1;
 
-var CSR_TIMEW     = 0x901;
-var CSR_INSTRETW  = 0x902;
-var CSR_CYCLEHW   = 0x980;
-var CSR_TIMEHW    = 0x981;
-var CSR_INSTRETHW = 0x982;
+// user CSRs standard read only
+var CSR_CYCLE     = 0xC00; // Cycle counter for RDCYCLE instruction
+var CSR_TIME      = 0xC01; // Timer for RDTIME instruction
+var CSR_INSTRET   = 0xC02; // Instructions-retired counter for RDINSTRET instruction
+var CSR_CYCLEH    = 0xC80; // Upper 32 bits of cycle, RV32I only
+var CSR_TIMEH     = 0xC81; // Upper 32 bits of time, RV32I only
+var CSR_INSTRETH  = 0xC82; // Upper 32 bits of instret, RV32I only
 
-var CSR_STIMEW    = 0xA01;
-var CSR_STIMEH    = 0xD81;
-var CSR_STIMEHW   = 0xA81;
-var CSR_STIME     = 0xD01;
-var CSR_SCAUSE    = 0xD42;
-var CSR_SBADADDR  = 0xD43;
-var CSR_MCPUID    = 0xF00;
-var CSR_MIMPID    = 0xF01;
-var CSR_MHARTID   = 0xF10;
-var CSR_CYCLEH    = 0xC80;
-var CSR_TIMEH     = 0xC81;
-var CSR_INSTRETH  = 0xC82;
+// This is a special CSR just for this emulator to connect the CLINT to the CPU
+// because the timer is handled in the CPU part
+var CSR_TIMECMP   = 0xC41;
 
-var CSR_MCPUID    = 0xF00;
-var CSR_MIMPID    = 0xF01;
-var CSR_MHARTID   = 0xF10;
-
-var CSR_TIME      = 0xC01;
-var CSR_INSTRET   = 0xC02;
-var CSR_STATS     = 0xC0;
-var CSR_UARCH0    = 0xCC0;
-var CSR_UARCH1    = 0xCC1;
-var CSR_UARCH2    = 0xCC2;
-var CSR_UARCH3    = 0xCC3;
-var CSR_UARCH4    = 0xCC4;
-var CSR_UARCH5    = 0xCC5;
-var CSR_UARCH6    = 0xCC6;
-var CSR_UARCH7    = 0xCC7;
-var CSR_UARCH8    = 0xCC8;
-var CSR_UARCH9    = 0xCC9;
-var CSR_UARCH10   = 0xCCA;
-var CSR_UARCH11   = 0xCCB;
-var CSR_UARCH12   = 0xCCC;
-var CSR_UARCH13   = 0xCCCD;
-var CSR_UARCH14   = 0xCCCE;
-var CSR_UARCH15   = 0xCCCF;
+// machine CSRs non-standard read-only
+//var CSR_MCPUID    = 0xF00;
+//var CSR_MIMPID    = 0xF01;
+var CSR_MHARTID   = 0xF14;
 
 var QUIET_NAN = 0xFFFFFFFF;
 var SIGNALLING_NAN = 0x7FFFFFFF;
@@ -17057,309 +16527,345 @@ function SafeCPU(ram, htif) {
 
     // registers
     this.r = new Int32Array(this.ram.heap, 0, 32);
-
     this.f = new Float64Array(this.ram.heap, 32<<2, 32); 
-
     this.fi = new Int32Array(this.ram.heap, 32<<2, 64); // for copying operations
     this.ff = new Float32Array(this.ram.heap, 0, 1); // the zero register is used to convert to single precision
 
     this.csr = new Int32Array(this.ram.heap, 0x2000, 4096);
-    this.pc = 0x200;
 
     this.Reset();
 }
 
+function get_field(reg, mask) {
+    var reg  = reg|0;
+    var mask = mask|0;
+    return ((reg & mask) / (mask & ~(mask << 1)))|0;
+}
+
+function set_field(reg, mask, val) {
+    var reg  = reg | 0;
+    var mask = mask | 0;
+    var val  = val | 0;
+    return (reg & ~mask) | ((val * (mask & ~(mask << 1))) & mask);
+}
+
 SafeCPU.prototype.Reset = function() {
     this.ticks = 0;
-    this.csr[CSR_MSTATUS]  = 0x96; // 1001 0110 - All Interrupts Disabled, FPU disabled 
-    this.csr[CSR_MTOHOST]  =  0x780;
-    this.csr[CSR_MCPUID]   = 0x4112D;
-    this.csr[CSR_MIMPID]   = 0x01;
-    this.csr[CSR_MHARTID]  = 0x00;
-    this.csr[CSR_MTVEC]    = 0x100;
-    this.csr[CSR_MIE]      = 0x00;
-    this.csr[CSR_MEPC]     = 0x00;
-    this.csr[CSR_MCAUSE]   = 0x00;
-    this.csr[CSR_MBADADDR] = 0x00;
-    this.csr[CSR_SSTATUS]  = 0x3010;
-    this.csr[CSR_STVEC]    = 0x00;
-    this.csr[CSR_SIE]      = 0x00;
-    this.csr[CSR_TIME]     = 0x0;
-    this.csr[CSR_SPTBR]    = 0x40000;
+    this.prv = PRV_M;
+    this.csr[CSR_MSTATUS]  = (0x0 << 24); // mbare vm mode, no mie, noe mprv
+    this.csr[CSR_MHARTID]  = 0x00; // hardware thread id is fixed to zero (= cpu id)
+    this.csr[CSR_MISA]     = (1<<8) | (1<<12) | (1<<0) | (1<<30) | (1<<5) | (1<<3); // base ISA, multiply mul/div, atomic instructions, 32-Bit, single precision, double precision
+    this.csr[CSR_MCAUSE]   = 0x00; // cause of the reset, hard reset
 
     // for atomic load & store instructions
-    this.amoaddr = 0x00; 
+    this.amoaddr = 0x00;
     this.amovalue = 0x00;
+
+    this.pc = 0x1000; // implementation defined start address, boot into ROM
 }
 
 SafeCPU.prototype.InvalidateTLB = function() {
+    // No TLB
 }
 
 SafeCPU.prototype.GetTimeToNextInterrupt = function () {
-    var delta = (this.csr[CSR_MTIMECMP]>>>0) - (this.ticks & 0xFFFFFFFF);
-    delta = delta + (delta<0?0xFFFFFFFF:0x0) | 0;
-    return delta;
+    var delta = ((this.csr[CSR_TIMECMP]|0) - (this.ticks|0))|0;
+    return delta|0;
 }
 
 SafeCPU.prototype.GetTicks = function () {
-    return this.ticks;
+    return this.ticks | 0;
 }
 
 SafeCPU.prototype.ProgressTime = function (delta) {
+    delta = delta | 0;
     this.ticks = this.ticks + delta | 0;
+    this.csr[CSR_TIME] = this.ticks | 0;
+
+    delta = this.csr[CSR_TIMECMP] - this.ticks | 0;
+    if (delta <= 1) {
+        this.csr[CSR_MIP] = this.csr[CSR_MIP] | MIP_STIP;
+    }
+    this.CheckForInterrupt();
 }
 
+// we haveto define these to copy the cpus
+SafeCPU.prototype.AnalyzeImage = function() {
+}
 
-SafeCPU.prototype.AnalyzeImage = function() // we haveto define these to copy the cpus
+// Count number of contiguous 0 bits starting from the LSB.
+function ctz(val)
 {
+    var res = 0;
+    val = val | 0;
+    if (val) {
+        while ((val & 1) == 0) {
+            val >>= 1;
+            res++;
+        }
+    }
+    return res;
 }
-
-SafeCPU.prototype.CheckForInterrupt = function () {
-};
 
 SafeCPU.prototype.RaiseInterrupt = function (line, cpuid) {
     //message.Debug("raise int " + line);
+    if (line == IRQ_S_EXT) {
+        this.csr[CSR_MIP] |= MIP_SEIP; // EXT
+    }
 };
 
 SafeCPU.prototype.ClearInterrupt = function (line, cpuid) {
+    //message.Debug("clear int " + line);
+    if (line == IRQ_S_EXT) {
+        this.csr[CSR_MIP] &= ~MIP_SEIP; // EXT
+    }
 };
 
-SafeCPU.prototype.Trap = function (cause, current_pc) {
+SafeCPU.prototype.CheckForInterrupt = function () {
+    var pending_interrupts = this.csr[CSR_MIP] & this.csr[CSR_MIE];
+/*
+    var mie = (this.csr[CSR_MSTATUS] & MSTATUS_MIE) != 0;
+    var m_enabled = this.prv < PRV_M || (this.prv == PRV_M && mie);
+    var enabled_interrupts = pending_interrupts & ~this.csr[CSR_MIDELEG] & -m_enabled;
 
-    var current_privilege_level = (this.csr[CSR_MSTATUS] & 0x06) >> 1;
-    this.PushPrivilegeStack();
-    this.csr[CSR_MEPC] = current_pc;
-    this.csr[CSR_MCAUSE] = cause;
-    this.pc = (0x100 + 0x40*current_privilege_level)|0;  
+    var sie = (this.csr[CSR_MSTATUS] >> 1) & 1;
+    var s_enabled = (this.prv < PRV_S) || ((this.prv == PRV_S) && sie);
+    enabled_interrupts |= pending_interrupts & this.csr[CSR_MIDELEG] & -s_enabled;
+*/
+
+    var mie = get_field(this.csr[CSR_MSTATUS], MSTATUS_MIE);
+    var m_enabled = ((this.prv < PRV_M) || ((this.prv == PRV_M) && mie))?1:0;
+    var enabled_interrupts = pending_interrupts & ~this.csr[CSR_MIDELEG] & -m_enabled;
+
+    if (enabled_interrupts == 0) {
+        var sie = get_field(this.csr[CSR_MSTATUS], MSTATUS_SIE);
+        var s_enabled = ((this.prv < PRV_S) || ((this.prv == PRV_S) && sie))?1:0;
+        enabled_interrupts |= pending_interrupts & this.csr[CSR_MIDELEG] & -s_enabled;
+    }
+
+    if (enabled_interrupts) {
+        //message.Debug("Take interrupt: " + ctz(enabled_interrupts));
+        this.Trap(0x80000000 | ctz(enabled_interrupts), this.pc, -1);
+    }
 };
 
-SafeCPU.prototype.MemTrap = function(addr, op) {
-    this.csr[CSR_MBADADDR] = addr;
+
+SafeCPU.prototype.Trap = function (cause, epc, addr) {
+    cause = cause|0;
+    epc = epc|0;
+    addr = addr|0;
+
+    //message.Debug("Trap cause=" + utils.ToHex(cause) + " at epc=" + utils.ToHex(epc));
+    //message.Abort();
+
+    // by default, trap to M-mode, unless delegated to S-mode
+    var bit = cause;
+    var deleg = this.csr[CSR_MEDELEG];
+    var interrupt = (bit & (1<<31)) != 0;
+    if (interrupt) {
+        deleg = this.csr[CSR_MIDELEG];
+        bit &= ~(1<<31);
+    }
+    if (this.prv <= PRV_S && bit < 32 && ((deleg >> bit) & 1)) {
+        // handle the trap in S-mode
+        this.pc = this.csr[CSR_STVEC];
+        this.csr[CSR_SCAUSE] = cause;
+        this.csr[CSR_SEPC] = epc;
+        this.csr[CSR_SBADADDR] = addr;
+
+        var s = this.csr[CSR_MSTATUS] | 0;
+        s = set_field(s, MSTATUS_SPIE, get_field(s, MSTATUS_SIE))|0;
+        s = set_field(s, MSTATUS_SPP, this.prv)|0;
+        s = set_field(s, MSTATUS_SIE, 0)|0;
+        this.csr[CSR_MSTATUS] = s;
+
+        this.prv = PRV_S;
+    } else {
+        var vector = ((this.csr[CSR_MTVEC] & 1) && interrupt) ? bit*4 : 0;
+        this.pc = (this.csr[CSR_MTVEC]&(~1)) + vector;
+        this.csr[CSR_MEPC] = epc;
+        this.csr[CSR_MCAUSE] = cause;
+        this.csr[CSR_MBADADDR] = addr;
+
+        var s = this.csr[CSR_MSTATUS] | 0;
+        s = set_field(s, MSTATUS_MPIE, get_field(s, MSTATUS_MIE))|0;
+        s = set_field(s, MSTATUS_MPP, this.prv)|0;
+        s = set_field(s, MSTATUS_MIE, 0)|0;
+        this.csr[CSR_MSTATUS] = s;
+
+        this.prv = PRV_M;
+    }
+
+    this.amoaddr = 0x00;
+    this.amovalue = 0x00;
+};
+
+SafeCPU.prototype.MemAccessTrap = function(addr, op) {
     switch(op) {
         case VM_READ:
-            this.Trap(CAUSE_LOAD_ACCESS_FAULT, this.pc - 4|0);
+            this.Trap(CAUSE_LOAD_PAGE_FAULT, this.pc - 4|0, addr);
             break;
 
         case VM_WRITE:
-            this.Trap(CAUSE_STORE_ACCESS_FAULT, this.pc - 4|0);
+            this.Trap(CAUSE_STORE_PAGE_FAULT, this.pc - 4|0, addr);
             break;
 
         case VM_FETCH:
-            this.Trap(CAUSE_INSTRUCTION_ACCESS_FAULT, this.pc);
+            this.Trap(CAUSE_FETCH_PAGE_FAULT, this.pc, addr);
             break;
     }
 }
 
 
+SafeCPU.prototype.CheckVMPrivilege = function (pte, op) {
+    pte = pte | 0;
+    op = op | 0;
+    //var type = (pte >> 1) & 0xF;
+    var supervisor = this.prv == PRV_S;
+    var sum = this.csr[CSR_MSTATUS] & MSTATUS_SUM; // protect user memory
+    var mxr = this.csr[CSR_MSTATUS] & MSTATUS_MXR; // make executable readable
 
-SafeCPU.prototype.CheckVMPrivilege = function (type, op) {
-
-    var priv = (this.csr[CSR_MSTATUS] & 0x06) >> 1;
-
-    switch(type) {
-
-        case 2: 
-            if (op == VM_READ) return true;
-            if ((priv == PRV_U) && (op == VM_FETCH)) return true;
+    if (pte & PTE_U) {
+        if (supervisor && !sum) {
+            message.Debug("Illegal access from privilege mode at pc=" + utils.ToHex(this.pc) + " " + op);
+            message.Abort();
             return false;
-            break;
-
-        case 3: 
-            if (!( (priv == PRV_S) && (op == VM_FETCH) ) ) return true;
-            break;
-
-        case 4:
-            if (op == VM_READ) return true;
-            return false;
-            break;
-
-        case 5:
-            if (op != VM_FETCH) return true;
-            break;
-
-        case 6:
-            if (op != VM_WRITE) return true;
-            break;
-
-        case 7:
-            return true;
-            break;
-
-        case 11:
-            if (priv == PRV_S) return true;
-            return false;
-            break;
-
-        case 13:
-            if ((priv == PRV_S) && (op != VM_FETCH)) return true;
-            break;
-
-        case 14:
-            if ((priv == PRV_S) && (op != VM_WRITE)) return true;
-            break;
-
-        case 15: 
-            if (priv == PRV_S) return true;
-            break;
-
+        }
+    } else {
+        if (!supervisor) return false;
     }
 
-    message.Debug("Inside CheckVMPrivilege for PC "+utils.ToHex(this.pc) + " and type " + type + " and op " + op);
+    // not valid or reserved for future use
+    if (!(pte & PTE_V) || (!(pte & PTE_R) && (pte & PTE_W))) {
+        //message.Debug("Unknown access from privilege mode at pc=" + utils.ToHex(this.pc) + " " + op);
+        //message.Abort();
+        return false;
+    } 
+
+    switch(op|0) {
+        case VM_FETCH:
+            return pte & PTE_X;
+
+        case VM_READ:
+            return (pte & PTE_R) || (mxr && (pte & PTE_X));
+
+        case VM_WRITE:
+            return (pte & PTE_R) && (pte & PTE_W);
+    }
+    message.Debug("Error in CheckVMPRivilege: unknown operation");
     message.Abort();
-    return false;
 }
 
 
+/* 
+ * Translates a virtual address to a physical by walking through
+ * the page table and checking  the rights
+ */
 SafeCPU.prototype.TranslateVM = function (addr, op) {
-    var vm = (this.csr[CSR_MSTATUS] >> 17) & 0x1F;
-    var current_privilege_level = (this.csr[CSR_MSTATUS] & 0x06) >> 1;
-    var i = 1; //i = LEVELS -1 and LEVELS = 2 in a 32 bit System
+    op = op | 0;
+    addr = addr | 0;
+    var vm = (this.csr[CSR_SPTBR] >> 31) & 1;
+    var PGSIZE = 4096;
+    var PGMASK = ~(PGSIZE-1);
+    var PGSHIFT = 12;
+    var ptidxbits = 10;
+    var ptesize = 4;
 
     // vm bare mode
-    if (vm == 0 || current_privilege_level == PRV_M) return addr;
-
-    // hack, open mmio by direct mapping
-    //if ((addr>>>28) == 0x9) return addr;
-
-    // only RV32 supported
-    if(vm != 8) {
-        message.Debug("unkown VM Mode " + vm + " at PC " + utils.ToHex(this.pc));
-        message.Abort();
-    }
+    if (vm == SPTBR_MODE_OFF || this.prv == PRV_M) return addr;
 
     // LEVEL 1
-    var offset = addr & 0xFFF;
+    // get first entry in page table
+    var base = (this.csr[CSR_SPTBR] & SPTBR32_PPN) << PGSHIFT;
+    var pteaddr = base + ((addr >>> 22) << 2);
+    var pte = this.ram.Read32(pteaddr) | 0;
 
-    var frame_num = this.ram.Read32(this.csr[CSR_SPTBR] + ((addr >>> 22) << 2));
-    var type = ((frame_num >> 1) & 0xF);
-    var valid = (frame_num & 0x01);
-
-    if (valid == 0) {
-        //message.Debug("Unsupported valid field " + valid + " or invalid entry in PTE at PC "+utils.ToHex(this.pc) + " pl:" + current_privilege_level + " addr:" + utils.ToHex(addr) + " op:"+op);
-        //message.Abort();
-        this.MemTrap(addr, op);
-        return -1;
-    }
-
-    if (type >= 2) {
-
-        if (!this.CheckVMPrivilege(type,op)) {
-            this.MemTrap(addr, op);
+    //message.Debug("VM Start " + utils.ToHex(addr) + " " + utils.ToHex(base) + " " + utils.ToHex(pte));
+    /* check if pagetable is finished here */
+    if ((pte & 0xF) != 0x1) {
+        if (!this.CheckVMPrivilege(pte, op)) {
+            this.MemAccessTrap(addr, op);
             return -1;
-            //message.Debug("Error in TranslateVM: Unhandled trap");
-            //message.Abort();
         }
-/*
-        var updated_frame_num = frame_num;
-        if(op == VM_READ)
-            updated_frame_num = (frame_num | 0x20);
-        else if(op == VM_WRITE)
-            updated_frame_num = (frame_num | 0x60);
-        this.ram.Write32(this.csr[CSR_SPTBR] + (page_num << 2),updated_frame_num);
-*/
-        return ((frame_num >> 10) << 12) | (addr&0x3FFFFF);
+        //this.ram.Write32(pteaddr, pte | PTE_A | ((op==VM_WRITE)?PTE_D:0));
+        //message.Debug("VM L1 " + utils.ToHex(addr) + " " + utils.ToHex(base) + " " + utils.ToHex(((pte >> 10) << 12) | (addr&0x3FFFFF)));
+        //message.Abort();
+        return ((pte >> 10) << 12) | (addr&0x3FFFFF);
     }
 
     // LEVEL 2
-    //message.Debug("Second level MMU");
-    i = i - 1;
-    var offset = addr & 0xFFF;
-    var new_sptbr = (frame_num & 0xFFFFFC00) << 2;
+    base = (pte & 0xFFFFFC00) << 2;
     var new_page_num = (addr >> 12) & 0x3FF;
-    var new_frame_num = this.ram.Read32(new_sptbr + (new_page_num << 2));
-    var new_type = ((new_frame_num >> 1) & 0xF);
-    var new_valid = (new_frame_num & 0x01);
+    var pteaddr = base + (new_page_num << 2);
 
-    if (new_valid == 0) {
-        this.MemTrap(addr, op);
+    pte = this.ram.Read32(pteaddr) | 0;
+    //message.Debug("Level 2 " + utils.ToHex(addr) + " " + utils.ToHex(base) + " " + utils.ToHex(pte));
+    //message.Abort();
+
+    /* only 2 levels are allowed in 32-Bit mode */
+    if ((pte & 0xF) == 0x1) {
+        this.MemAccessTrap(addr, op);
         return -1;
     }
 
-    if (!this.CheckVMPrivilege(new_type, op)) {
-        //message.Debug("Error in TranslateVM: Unhandled trap");
-        //message.Abort();
-        this.MemTrap(addr, op);
+    if (!this.CheckVMPrivilege(pte, op)) {
+        this.MemAccessTrap(addr, op);
         return -1;
     }
-
-/*
-    var updated_frame_num = new_frame_num;
-    if(op == VM_READ)
-        updated_frame_num = (new_frame_num | 0x20);
-    else if(op == VM_WRITE)
-        updated_frame_num = (new_frame_num | 0x60);
-    this.ram.Write32(new_sptbr + (new_page_num << 2),updated_frame_num);
-*/
-
-    return ((new_frame_num >> 10) << 12) | offset;
+    //this.ram.Write32(pteaddr, pte | PTE_A | ((op==VM_WRITE)?PTE_D:0));
+    //message.Debug("VM L2 " + utils.ToHex(addr) + " " + utils.ToHex(base) + " " + utils.ToHex( ((pte >> 10) << 12) | (addr & 0xFFF) ));
+    //message.Abort();
+    return ((pte >> 10) << 12) | (addr & 0xFFF);
 };
 
 
-SafeCPU.prototype.SetCSR = function (addr,value) {
+SafeCPU.prototype.SetCSR = function (addr, value) {
 
+    //message.Debug("SetCSR: Address:" + utils.ToHex(addr) + ", value " + utils.ToHex(value));
     var csr = this.csr;
 
     switch(addr)
     {
-        case CSR_FCSR:
-            csr[addr] = value;
-            break;
-
-        case CSR_MDEVCMDTOHOST:
-            csr[addr] = value;
-            this.htif.WriteDEVCMDToHost(value);
-            break;
-
-        case CSR_MDEVCMDFROMHOST:
-            csr[addr] = value;
-            this.htif.WriteDEVCMDFromHost(value);
-            break;
-
-        case CSR_MTOHOST:
-            csr[addr] =  value;
-            this.htif.WriteToHost(value);
-            break;
-
-        case CSR_MTOHOST_TEMP: //only temporary for the patched pk.
-            this.ram.Write8(0x90000000 >> 0, value);
-            if (value == 0xA) this.ram.Write8(0x90000000 >> 0, 0xD);
-            break;
-
-        case CSR_MFROMHOST:
-            csr[addr] = value;
-            this.htif.WriteFromHost(value);
-            break;
-
         case CSR_MSTATUS:
+            if ((value ^ csr[CSR_MSTATUS]) & (MSTATUS_MPP | MSTATUS_MPRV | MSTATUS_SUM | MSTATUS_MXR)) {
+                this.InvalidateTLB();
+            }
+            var mask = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_MIE | MSTATUS_MPIE
+                     | MSTATUS_SPP | MSTATUS_FS | MSTATUS_MPRV | MSTATUS_SUM
+                     | MSTATUS_MPP | MSTATUS_MXR | MSTATUS_TW | MSTATUS_TVM
+                     | MSTATUS_TSR | MSTATUS_XS;
+            csr[addr] = (value & ~mask) | (value & mask);
+            var dirty = (csr[CSR_MSTATUS] & MSTATUS_FS) == MSTATUS_FS;
+            dirty |= (csr[CSR_MSTATUS] & MSTATUS_XS) == MSTATUS_XS;
+            csr[CSR_MSTATUS] = (csr[CSR_MSTATUS] & ~MSTATUS_SD) | (dirty?1<<MSTATUS_SD:0);
+            break;
+
+        case CSR_SSTATUS:
             csr[addr] = value;
-            break;
-
-        case CSR_MCPUID:
-            //csr[addr] = value;
-            break;
-
-        case CSR_MIMPID:
-            csr[addr] = value;
-            break;
-
-        case CSR_MHARTID:
-            csr[addr] = value;
-            break;
-
-        case CSR_MTVEC:
-            csr[addr] = value;
-            break;
-
-        case CSR_MIP:
-            //csr[addr] = value;
-            var mask = 0x2 | 0x08; //mask = MIP_SSIP | MIP_MSIP
-            csr[CSR_MIP] = (csr[CSR_MIP] & ~mask) | (value & mask);
+            var mask = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_FS | MSTATUS_XS | MSTATUS_SUM | MSTATUS_MXR;
+            this.SetCSR(CSR_MSTATUS, (csr[CSR_MSTATUS] & ~mask) | (value & mask));
             break;
 
         case CSR_MIE:
-            //csr[addr] = value;
-            var mask = 0x2 | 0x08 | 0x20; //mask = MIP_SSIP | MIP_MSIP | MIP_STIP
+            var mask = MIP_SSIP | MIP_STIP | MIP_SEIP | (1 << IRQ_COP) | MIP_MSIP | MIP_MTIP;
             csr[CSR_MIE] = (csr[CSR_MIE] & ~mask) | (value & mask);
+            //message.Debug("Write MIE: " + utils.ToHex(csr[CSR_MIE]) + " at pc=" + utils.ToHex(this.pc));
+            break;
+
+        case CSR_SIE:
+            csr[CSR_MIE] = (csr[CSR_MIE] & ~csr[CSR_MIDELEG]) | (value & csr[CSR_MIDELEG]);
+            //message.Debug("Write SIE: " + utils.ToHex(csr[CSR_MIE]) + " at pc=" + utils.ToHex(this.pc));
+            break;
+
+        case CSR_MISA:
+            // TODO: only a few bits can be changed
+            csr[CSR_MISA] = value;
+            break;
+
+        case CSR_MIP:
+            var mask = MIP_SSIP | MIP_STIP;
+            csr[CSR_MIP] = (csr[CSR_MIP] & ~mask) | (value & mask);
+            //message.Debug("Write MIP: " + utils.ToHex(csr[CSR_MIP]));
             break;
 
         case CSR_SEPC:
@@ -17367,7 +16873,7 @@ SafeCPU.prototype.SetCSR = function (addr,value) {
             csr[addr] = value;
             break;
 
-        case CSR_MCAUSE:
+        case CSR_SBADADDR:
             csr[addr] = value;
             break;
 
@@ -17375,88 +16881,35 @@ SafeCPU.prototype.SetCSR = function (addr,value) {
             csr[addr] = value;
             break;
 
-        case CSR_MBADADDR:
-            csr[addr] = value;
-            break;
-
-        case CSR_SBADADDR:
-            csr[addr] = value;
-            break;
-
-        case CSR_SSTATUS:
-            csr[addr] = value;
-            csr[CSR_MSTATUS] &= ~0x1F039; 
-            csr[CSR_MSTATUS] |= (csr[CSR_SSTATUS] & 0x01); //IE0
-            csr[CSR_MSTATUS] |= (csr[CSR_SSTATUS] & 0x08); //IE1
-            csr[CSR_MSTATUS] |= (csr[CSR_SSTATUS] & 0x10); //PRV1
-            csr[CSR_MSTATUS] |= (csr[CSR_SSTATUS] & 0xF000); //FS,XS
-            csr[CSR_MSTATUS] |= (csr[CSR_SSTATUS] & 0x10000); //MPRV
-            break; 
-
-        case CSR_STVEC:
-            csr[addr] = value;
-            break;
-
-        case CSR_SIP:
-            //csr[addr] = value;
-            var mask = 0x2; //mask = MIP_SSIP
-            csr[CSR_MIP] = (csr[CSR_MIP] & ~mask) | (value & mask);
-            break;
-
-        case CSR_SIE:
-            //csr[addr] = value;
-            var mask = 0x2 | 0x20; //mask = MIP_SSIP | MIP_STIP
-            csr[CSR_MIE] = (csr[CSR_MIE] & ~mask) | (value & mask);
-            break;
-
+        case CSR_FCSR:
+        case CSR_MEDELEG:
+        case CSR_MIDELEG:
         case CSR_MSCRATCH:
-            csr[addr] = value;
-            break;
-
         case CSR_SSCRATCH:
             csr[addr] = value;
             break;
 
-        case CSR_CYCLEW:
-            csr[addr] = value;
-            break;
-
-        case CSR_CYCLES:
-            this.ticks = value;
-            csr[addr] = value;
-            break;
-
-        case CSR_MTIME:
-        case CSR_STIME:
-        case CSR_STIMEW:
-            csr[addr] = value;
-            break;
-
-        case CSR_MTIMEH:
-        case CSR_STIMEH:
-        case CSR_STIMEHW:
-            csr[addr] = value;
-            break;
-
-        case CSR_TIME:
-        case CSR_TIMEW:
-            csr[addr] = value;
-            break;
-
-        case CSR_MTIMECMP:
-        case CSR_STIMECMP:
-            csr[CSR_MIP] &= ~(0x20); //csr[CSR_MIP] &= ~MIP_STIP
-            csr[addr] = value;
-            break;
-
-        case CSR_MTIMECMPH:
-            csr[addr] = value;
-            break;
-
         case CSR_SPTBR:
+            this.InvalidateTLB();
+            csr[addr] = value & (SPTBR32_PPN | SPTBR32_MODE);
+            break;
+
+        case CSR_STVEC:
+        case CSR_MTVEC:
+            csr[addr] = value&(~3);
+            break;
+
+
+        case CSR_MCOUNTEREN:
+        case CSR_SCOUNTEREN:
             csr[addr] = value;
             break;
 
+        case CSR_TDATA1:
+            csr[addr] = value;
+            break;
+
+/*
         case CSR_FRM:
             csr[addr] = value;
             break;
@@ -17465,7 +16918,10 @@ SafeCPU.prototype.SetCSR = function (addr,value) {
             csr[addr] = value;
             break;
 
-        case CSR_FCSR:
+*/
+
+        case CSR_PMPCFG0:
+        case CSR_PMPADDR0:
             csr[addr] = value;
             break;
 
@@ -17479,53 +16935,24 @@ SafeCPU.prototype.SetCSR = function (addr,value) {
 
 SafeCPU.prototype.GetCSR = function (addr) {
 
+    //message.Debug("GetCSR: Address:" + utils.ToHex(addr));
     var csr = this.csr;
-    var current_privilege_level = (csr[CSR_MSTATUS] & 0x06) >> 1;
-
     switch(addr)
     {
         case CSR_FCSR:
             return 0x0;
             break;
 
-        case CSR_MDEVCMDTOHOST:
-            return this.htif.ReadDEVCMDToHost();
-            break;
-
-        case CSR_MDEVCMDFROMHOST:
-            return this.htif.ReadDEVCMDFromHost();
-            break;
-
-        case CSR_MTOHOST:
-            return this.htif.ReadToHost();
-            break;
-
-        case CSR_MTOHOST_TEMP: //only temporary for the patched pk.
-            return 0x0;
-            break;
-
-        case CSR_MFROMHOST:
-            return this.htif.ReadFromHost();
-            break;
-
-        case CSR_MSTATUS:
-            return csr[addr];
-            break;
-
-        case CSR_MCPUID:
-            return csr[addr];
-            break;
-
-        case CSR_MIMPID:
-            return csr[addr];
-            break;
-
         case CSR_MHARTID:
             return csr[addr];
             break;
 
-        case CSR_MTVEC:
+        case CSR_MISA:
             return csr[addr];
+            break;
+
+        case CSR_SIE:
+            return csr[CSR_MIE] & csr[CSR_MIDELEG];
             break;
 
         case CSR_MIE:
@@ -17534,92 +16961,29 @@ SafeCPU.prototype.GetCSR = function (addr) {
 
         case CSR_SEPC:
         case CSR_MEPC:
-            return csr[addr];
-            break;
-
         case CSR_MCAUSE:
-            return csr[addr];
-            break;
-
         case CSR_SCAUSE:
-            return csr[addr];
-            break;
-
+        case CSR_MEDELEG:
+        case CSR_MIDELEG:
+        case CSR_MSTATUS:
+        case CSR_MIP:
+        case CSR_SBADADDR:
         case CSR_MBADADDR:
             return csr[addr];
             break;
 
-        case CSR_SBADADDR:
-            return csr[addr];
-            break;
-
         case CSR_SSTATUS:
-            //if (current_privilege_level == 0) this.Trap(CAUSE_ILLEGAL_INSTRUCTION);
-            csr[CSR_SSTATUS] = 0x00; 
-            csr[CSR_SSTATUS] |= (csr[CSR_MSTATUS] & 0x01); //IE0
-            csr[CSR_SSTATUS] |= (csr[CSR_MSTATUS] & 0x08); //IE1
-            csr[CSR_SSTATUS] |= (csr[CSR_MSTATUS] & 0x10); //PRV1
-            csr[CSR_SSTATUS] |= (csr[CSR_MSTATUS] & 0xF000); //FS,XS
-            csr[CSR_SSTATUS] |= (csr[CSR_MSTATUS] & 0x10000); //MPRV
-            return csr[CSR_SSTATUS];
-            break;
-
-        case CSR_STVEC:
-            return csr[addr];
-            break;
-
-        case CSR_MIP:
-            return csr[addr];
-            break;
-
-        case CSR_MIE:
-            return csr[addr];
-            break;
-
-        case CSR_SIP: 
-            return csr[CSR_MIP] & (0x2 | 0x20);//(MIP_SSIP | MIP_STIP)
-            break;
-
-        case CSR_SIE: 
-            return csr[CSR_MIE] & (0x2 | 0x20);//(MIP_SSIP | MIP_STIP)
+            var mask = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_FS
+                       | MSTATUS_XS | MSTATUS_SUM;
+            var sstatus = csr[CSR_MSTATUS] & mask;
+            if ((sstatus & MSTATUS_FS) == MSTATUS_FS ||
+                (sstatus & MSTATUS_XS) == MSTATUS_XS)
+                sstatus |= MSTATUS_SD;
+            return sstatus;
             break;
 
         case CSR_MSCRATCH:
-            return csr[addr];
-            break;
-
         case CSR_SSCRATCH:
-            return csr[addr];
-            break;
-
-        case CSR_CYCLEW:
-            return this.ticks;
-            break;
-
-        case CSR_CYCLES:
-            return this.ticks;
-            break;
-
-        case CSR_MTIME:
-        case CSR_STIME:
-        case CSR_STIMEW:
-            return this.ticks;
-            break;
-
-        case CSR_MTIMEH:
-        case CSR_STIMEH:
-        case CSR_STIMEHW:
-            return (this.ticks) >> 32;
-            break;
-
-        case CSR_TIME:
-        case CSR_TIMEW:
-            return this.ticks;
-            break;
-
-        case CSR_MTIMECMP:
-        case CSR_STIMECMP:
-        case CSR_MTIMECMPH:
             return csr[addr];
             break;
 
@@ -17627,6 +16991,34 @@ SafeCPU.prototype.GetCSR = function (addr) {
             return csr[addr];
             break;
 
+        case CSR_STVEC:
+        case CSR_MTVEC:
+            return csr[addr];
+            break;
+
+        case CSR_MCOUNTEREN:
+        case CSR_SCOUNTEREN:
+            return csr[addr];
+            break;
+
+        case CSR_TIME:
+            return this.ticks;
+            break;
+
+        case CSR_TIMEH:
+            return 0x0;
+            break;
+
+        case CSR_PMPCFG0:
+        case CSR_PMPADDR0:
+            return 0x0;
+            break;
+
+        case CSR_TDATA1:
+            return csr[addr];
+            break;
+
+/*
         case CSR_FRM:
             return csr[addr];
             break;
@@ -17634,11 +17026,7 @@ SafeCPU.prototype.GetCSR = function (addr) {
         case CSR_FFLAGS:
             return csr[addr];
             break;
-
-        case CSR_FCSR:
-            return csr[addr];
-            break;
-
+*/
         default:
             message.Debug("Error in GetCSR: PC "+utils.ToHex(this.pc)+" Address " + utils.ToHex(addr) + " unkown");
             message.Abort();
@@ -17738,25 +17126,6 @@ SafeCPU.prototype.SUMul64 = function (a,b) {
     return result;
 };
 
-
-SafeCPU.prototype.PushPrivilegeStack = function () {
-
-    var csr = this.csr;
-    var mstatus = csr[CSR_MSTATUS];
-    var privilege_level_stack = mstatus & 0x1FF;
-    var new_privilege_level_stack = (((privilege_level_stack << 2) | PRV_M) << 1) & 0x1FF;
-    csr[CSR_MSTATUS] = ((mstatus & (~0xFFF)) + new_privilege_level_stack) & 0xFFFEFFFF; //Last "and" to set mprv(bit 16) to zero
-};
-
-SafeCPU.prototype.PopPrivilegeStack = function () {
-
-    var csr = this.csr;
-    var mstatus = csr[CSR_MSTATUS];
-    var privilege_level_stack =  (mstatus & 0x1FF);
-    var new_privilege_level_stack = ((privilege_level_stack >>> 3) | ((PRV_U << 1) | 0x1) << 6);
-    csr[CSR_MSTATUS] = (mstatus & (~0xFFF)) + new_privilege_level_stack;
-};
-
 SafeCPU.prototype.Step = function (steps, clockspeed) {
     var r = this.r;
     var fi = this.fi;
@@ -17785,55 +17154,30 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
     steps = steps | 0;
     clockspeed = clockspeed | 0;
     var delta = 0;
-    
+this.n = 0;
+
     do {
         r[0] = 0x00;
 
-        var current_privilege_level = (this.csr[CSR_MSTATUS] & 0x06) >> 1;
-        
         if (!(steps & 63)) {
             // ---------- TICK ----------
-            var delta = csr[CSR_MTIMECMP] - this.ticks | 0;
-            delta = delta + (delta<0?0xFFFFFFFF:0x0) | 0;
+            var delta = csr[CSR_TIMECMP] - this.ticks | 0;
             this.ticks = this.ticks + clockspeed | 0;
+            csr[CSR_TIME] = this.ticks | 0;
             if (delta < clockspeed) {
-                csr[CSR_MIP] = csr[CSR_MIP] | 0x20;
+                csr[CSR_MIP] = csr[CSR_MIP] | MIP_STIP;
             }
-
-            interrupts = csr[CSR_MIE] & csr[CSR_MIP];
-            ie = csr[CSR_MSTATUS] & 0x01;
-
-            if ((current_privilege_level < 3) || ((current_privilege_level == 3) && ie)) {
-                if (interrupts & 0x8) {
-                    this.Trap(CAUSE_SOFTWARE_INTERRUPT, this.pc);
-                    continue;
-                } else
-                if (!this.htif.IsQueueEmpty()) {
-                    this.Trap(CAUSE_HOST_INTERRUPT, this.pc);
-                    continue;
-                }
-            }
-            if ((current_privilege_level < 1) || ((current_privilege_level == 1) && ie)) {
-                if (interrupts & 0x2) {
-                    this.Trap(CAUSE_SOFTWARE_INTERRUPT, this.pc);
-                    continue;
-                } else
-                if (interrupts & 0x20) {
-                     this.Trap(CAUSE_TIMER_INTERRUPT, this.pc);
-                     continue;
-                }
-            }
+            this.CheckForInterrupt();
         }
 
-
-        paddr = this.TranslateVM(this.pc, VM_FETCH);
+        paddr = this.TranslateVM(this.pc, VM_FETCH)|0;
         if(paddr == -1) {
             continue;
         }
 
         ins = this.ram.Read32(paddr);
+        //DebugIns.Disassemble(ins, r, csr, this.pc);
         this.pc = this.pc + 4|0;
-        //DebugIns.Disassemble(ins,r,csr,this.pc);
 
         switch(ins&0x7F) {
 
@@ -17846,7 +17190,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     
                     case 0x00:
                         // lb
-                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ)|0;
                         if(paddr == -1) break;
                         r[rindex] = (this.ram.Read8(paddr) << 24) >> 24;
                         break;
@@ -17854,10 +17198,12 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x01:
                         // lh
                         if (rs1+imm & 1) {
-                             message.Debug("Error in lh: unaligned address");
-                             message.Abort();
+                             this.Trap(CAUSE_MISALIGNED_LOAD, this.pc - 4|0, rs1+imm|0);
+                             //message.Debug("Error in lh: unaligned address");
+                             //message.Abort();
+                             break;
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ)|0;
                         if(paddr == -1) break;
                         r[rindex] = (this.ram.Read16(paddr) << 16) >> 16;
                         break;
@@ -17865,17 +17211,27 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x02:
                         // lw
                         if (rs1+imm & 3) {
-                             message.Debug("Error in lw: unaligned address");
-                             message.Abort();
+                             this.Trap(CAUSE_MISALIGNED_LOAD, this.pc - 4|0, rs1+imm|0);
+                             //message.Debug("Error in lw: unaligned address");
+                             //message.Abort();
+                             break;
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ)|0;
                         if(paddr == -1) break;
+                        if ((paddr>>>0) == 0x8000a008) {
+                            this.ram.Write32(paddr+0, this.htif.ReadToHost());
+                            this.ram.Write32(paddr+4, this.htif.ReadDEVCMDToHost());
+                        }
+                        if ((paddr>>>0) == 0x8000a000) {
+                            this.ram.Write32(paddr+0, this.htif.ReadFromHost());
+                            this.ram.Write32(paddr+4, this.htif.ReadDEVCMDFromHost());
+                        }
                         r[rindex] = this.ram.Read32(paddr);
                         break;
 
                     case 0x04:
                         // lbu
-                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ)|0;
                         if(paddr == -1) break;
                         r[rindex] = this.ram.Read8(paddr) & 0xFF;
                         break;
@@ -17886,7 +17242,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                              message.Debug("Error in lhu: unaligned address");
                              message.Abort();
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0 ,VM_READ);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ)|0;
                         if(paddr == -1) break;
                         r[rindex] = this.ram.Read16(paddr) & 0xFFFF;
                         break;
@@ -17910,31 +17266,44 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     
                     case 0x00:
                         // sb
-                        paddr = this.TranslateVM(rs1 + imm|0,VM_WRITE);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_WRITE)|0;
                         if(paddr == -1) break;
-                        this.ram.Write8(paddr,(r[rindex] & 0xFF));
+                        this.ram.Write8(paddr, (r[rindex] & 0xFF));
                         break;
 
                     case 0x01:
                         // sh
                         if (rs1+imm & 1) {
-                             message.Debug("Error in sh: unaligned address");
-                             message.Abort();
+                             this.Trap(CAUSE_MISALIGNED_STORE, this.pc - 4|0, rs1+imm|0);
+                             //message.Debug("Error in sh: unaligned address");
+                             //message.Abort();
+                             break;
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0,VM_WRITE);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_WRITE)|0;
                         if(paddr == -1) break;
-                        this.ram.Write16(paddr,(r[rindex] & 0xFFFF));
+                        this.ram.Write16(paddr, (r[rindex] & 0xFFFF));
                         break;
 
                     case 0x02:
                         // sw
                         if (rs1+imm & 3) {
-                             message.Debug("Error in sw: unaligned address");
-                             message.Abort();
+                             this.Trap(CAUSE_MISALIGNED_STORE, this.pc - 4|0, rs1+imm|0);
+                             //message.Debug("Error in sw: unaligned address");
+                             //message.Abort();
+                             break;
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0,VM_WRITE);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_WRITE)|0;
                         if(paddr == -1) break;
-                        this.ram.Write32(paddr,r[rindex]);
+                        this.ram.Write32(paddr, r[rindex]);
+                        if ((paddr>>>0) == 0x8000a00c) {
+                            //message.Debug("Write tohost at " + utils.ToHex(this.pc));
+                            this.htif.WriteDEVCMDToHost(this.ram.Read32(paddr));
+                            this.htif.WriteToHost(this.ram.Read32(paddr-4));
+                        }
+                        if ((paddr>>>0) == 0x8000a004) {
+                            this.htif.WriteDEVCMDFromHost(this.ram.Read32(paddr));
+                            this.htif.WriteFromHost(this.ram.Read32(paddr-4));
+                        }
                         break;
 
                     default:
@@ -18026,6 +17395,11 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                                 r[rindex] = rs1 + rs2;
                                 break;
 
+                            case 0x01:
+                                // sll
+                                r[rindex] = rs1 << (rs2 & 0x1F);
+                                break;
+
                             case 0x02:
                                 // slt
                                 if(rs1 < rs2) r[rindex] = 0x01;
@@ -18038,9 +17412,14 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                                 else r[rindex] = 0x00;
                                 break;
 
-                            case 0x07:
-                                // and
-                                r[rindex] = rs1 & rs2;
+                            case 0x04:
+                                // xor
+                                r[rindex] = rs1 ^ rs2;
+                                break;
+
+                            case 0x05:
+                                // srl
+                                r[rindex] = rs1 >>> (rs2 & 0x1F);
                                 break;
 
                             case 0x06:
@@ -18048,20 +17427,11 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                                 r[rindex] = rs1 | rs2;
                                 break;
 
-                            case 0x04:
-                                // xor
-                                r[rindex] = rs1 ^ rs2;
+                            case 0x07:
+                                // and
+                                r[rindex] = rs1 & rs2;
                                 break;
 
-                            case 0x01:
-                                // sll
-                                r[rindex] = rs1 << (rs2 & 0x1F);
-                                break;
-
-                            case 0x05:
-                                // srl
-                                r[rindex] = rs1 >>> (rs2 & 0x1F);
-                                break;
                         }
                         break;
 
@@ -18089,8 +17459,8 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
 
                     case 0x01:
                         // mul, mulh, mulhsu, mulhu, div, divu, rem, remu
-                        rs1 = r[(ins >> 15) & 0x1F];
-                        rs2 = r[(ins >> 20) & 0x1F];
+                        rs1 = r[(ins >> 15) & 0x1F]|0;
+                        rs2 = r[(ins >> 20) & 0x1F]|0;
                         rindex = (ins >> 7) & 0x1F;
                         switch((ins >> 12)&0x7) {
                             case 0x00:
@@ -18122,34 +17492,34 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                                 if(rs2 == 0)
                                     quo = -1;
                                 else
-                                    quo = rs1 / rs2;
+                                    quo = (rs1 / rs2)|0;
                                 r[rindex] = quo;
                                 break;
 
                             case 0x05:
                                 // divu
                                 if(rs2 == 0)
-                                    quo = 0xFFFFFFFF;
+                                    quo = -1;
                                 else
-                                    quo = (rs1 >>> 0) / (rs2 >>> 0);
+                                    quo = ((rs1 >>> 0) / (rs2 >>> 0))|0;
                                 r[rindex] = quo;
                                 break;
 
                             case 0x06:
                                 // rem
                                 if(rs2 == 0)
-                                    rem = rs1;
+                                    rem = rs1|0;
                                 else
-                                    rem = rs1 % rs2;
+                                    rem = (rs1 % rs2)|0;
                                 r[rindex] = rem;
                                 break;
 
                             case 0x07:
                                 // remu
                                 if(rs2 == 0)
-                                    rem = (rs1 >>> 0);
+                                    rem = rs1|0;
                                 else
-                                    rem = (rs1 >>> 0) % (rs2 >>> 0);
+                                    rem = ((rs1 >>> 0) % (rs2 >>> 0))|0;
                                 r[rindex] = rem;
                                 break;
                         }
@@ -18190,6 +17560,8 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
 
             case 0x67:
                 // jalr
+                //if ((this.pc>>>0) >= 0xC0000000)
+	        //        message.Debug("jump from " + utils.ToHex(this.pc));
                 imm = ins >> 20;
                 rs1 = r[(ins >> 15) & 0x1F];
                 rindex = (ins >> 7) & 0x1F;
@@ -18204,8 +17576,8 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 imm3 = (ins >> 8) & 0x0F;
                 imm4 = ((ins >> 7) & 0x01) << 10;
                 imm =  ((imm1 | imm2 | imm3 | imm4) << 1 );
-                rs1 = r[(ins >> 15) & 0x1F];
-                rs2 = r[(ins >> 20) & 0x1F];
+                rs1 = r[(ins >> 15) & 0x1F]|0;
+                rs2 = r[(ins >> 20) & 0x1F]|0;
 
                 switch((ins >> 12)&0x7) {
                     
@@ -18257,27 +17629,30 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x01:
                         // csrrw
                         r[rindex] = this.GetCSR(imm);
-                        //if (rindex != ((ins >> 15) & 0x1F))
                         this.SetCSR(imm, rs1);
                         break;
 
                     case 0x02:
                         // csrrs
                         r[rindex] = this.GetCSR(imm);
-                        this.SetCSR(imm, this.GetCSR(imm) | rs1);
+                        if (rs1 != 0) {
+                            this.SetCSR(imm, this.GetCSR(imm) | rs1);
+                        }
                         break;
 
                     case 0x03:
                         // csrrc
                         r[rindex] = this.GetCSR(imm);
-                        this.SetCSR(imm, this.GetCSR(imm) & (~rs1));
+                        if (rs1 != 0) {
+                            this.SetCSR(imm, this.GetCSR(imm) & (~rs1));
+                        }
                         break;
 
                     case 0x05:
                         // csrrwi
                         r[rindex] = this.GetCSR(imm);
                         zimm = (ins >> 15) & 0x1F;
-                        if(zimm != 0) this.SetCSR(imm, (zimm >> 0));
+                        this.SetCSR(imm, (zimm >> 0));
                         break;
                         
 
@@ -18285,42 +17660,46 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                         // csrrsi
                         r[rindex] = this.GetCSR(imm);
                         zimm = (ins >> 15) & 0x1F;
-                        if(zimm != 0) this.SetCSR(imm, this.GetCSR(imm) | (zimm >> 0));
+                        if (zimm != 0) {
+                            this.SetCSR(imm, this.GetCSR(imm) | (zimm >> 0));
+                        }
                         break;
 
                     case 0x07:
                         // csrrci
                         r[rindex] = this.GetCSR(imm);
                         zimm = (ins >> 15) & 0x1F;
-                        if(zimm != 0) this.SetCSR(imm, this.GetCSR(imm) & ~(zimm >> 0));
+                        if (zimm != 0) {
+                            this.SetCSR(imm, this.GetCSR(imm) & ~(zimm >> 0));
+                        }
                         break;
                     
                     case 0x00:
-                        // ecall, eret, ebreak, mrts, wfi
+                        // ecall, sret, ebreak, mret, wfi
                         switch((ins >> 20)&0xFFF) {
                             case 0x00:
                                 // ecall
-                                switch(current_privilege_level)
+                                switch(this.prv)
                                 {
                                     case PRV_U:
-                                        this.Trap(CAUSE_ENVCALL_UMODE, this.pc - 4|0);
+                                        this.Trap(CAUSE_USER_ECALL, this.pc - 4|0, -1);
                                         break;
 
                                     case PRV_S:
-                                        this.Trap(CAUSE_ENVCALL_SMODE, this.pc - 4|0);
+                                        this.Trap(CAUSE_SUPERVISOR_ECALL, this.pc - 4|0, -1);
                                         break;
 
                                     case PRV_H:
-                                        this.Trap(CAUSE_ENVCALL_HMODE, this.pc - 4|0);
+                                        this.Trap(CAUSE_HYPERVISOR_ECALL, this.pc - 4|0, -1);
                                         this.Abort();
                                         break;
 
                                     case PRV_M:
-                                        this.Trap(CAUSE_ENVCALL_MMODE, this.pc - 4|0);
+                                        this.Trap(CAUSE_MACHINE_ECALL, this.pc - 4|0, -1);
                                         break;
                                     
                                     default:
-                                        message.Debug("Error in ecall: Don't know how to handle privilege level " + current_privilege_level);
+                                        message.Debug("Error in ecall: Don't know how to handle privilege level " + privilege_mode);
                                         message.Abort();
                                         break;
                                 }
@@ -18328,65 +17707,55 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
 
                             case 0x001:
                                 // ebreak
-                                this.Trap(CAUSE_BREAKPOINT, this.pc - 4|0);
-                                break;
-
-                            case 0x100:
-                                // eret
-                                var current_privilege_level = (csr[CSR_MSTATUS] & 0x06) >> 1;
-                                if(current_privilege_level < PRV_S) {
-                                    message.Debug("Error in eret: current_privilege_level isn't allowed access");
-                                    message.Abort();
-                                    break;   
-                                }
-                                this.PopPrivilegeStack();
-
-                                switch(current_privilege_level)
-                                {
-                                    case PRV_S:
-                                        this.pc = csr[CSR_SEPC]|0;
-                                        break;
-
-                                    case PRV_H:
-                                        this.pc = csr[CSR_HEPC]|0;
-                                        break;
-
-                                    case PRV_M:
-                                        this.pc = csr[CSR_MEPC]|0;
-                                        break;
-                                    
-                                    default:
-                                        message.Debug("Error in eret: Don't know how to handle privilege level " + current_privilege_level);
-                                        message.Abort();
-                                        break;
-                                }
+                                this.Trap(CAUSE_BREAKPOINT, this.pc - 4|0, -1);
                                 break;
 
                             case 0x102:
-                                // wfi
-                                /*
-                                interrupts = csr[CSR_MIE] & csr[CSR_MIP];
-                                if ((!interrupts) && (this.htif.IsQueueEmpty()))
-                                    return steps;
-                                */
-                                break;
-
-                            case 0x305:
-                                // mrts
-                                if (current_privilege_level != PRV_M) {
-                                    message.Debug("Error in mrts: current_privilege_level isn't allowed access");
+                                // sret
+                                if (this.prv != PRV_S) {
+                                    message.Debug("Error in sret: privilege_mode isn't allowed access");
                                     message.Abort();
-                                    break;   
+                                    break;
                                 }
-                                csr[CSR_MSTATUS] = (csr[CSR_MSTATUS] & ~0x6) | 0x02; //Setting the Privilage level to Supervisor
-                                csr[CSR_SBADADDR] = csr[CSR_MBADADDR];
-                                csr[CSR_SCAUSE] = csr[CSR_MCAUSE];
-                                csr[CSR_SEPC] = csr[CSR_MEPC];
-                                this.pc = csr[CSR_STVEC]|0;
+                                this.pc = csr[CSR_SEPC] | 0;
+                                var s = csr[CSR_MSTATUS] | 0;
+                                var prev_prv = get_field(s, MSTATUS_SPP);
+                                s = set_field(s, MSTATUS_SIE, get_field(s, MSTATUS_SPIE));
+                                s = set_field(s, MSTATUS_SPIE, 1);
+                                s = set_field(s, MSTATUS_SPP, PRV_U);
+                                csr[CSR_MSTATUS] = s;
+                                this.prv = prev_prv;
+                                this.InvalidateTLB();
                                 break;
 
-                            case 0x101:
-                                // sfence.vm
+                            case 0x105:
+                                // wfi
+                                //message.Debug("wfi");
+                                if ((csr[CSR_MIE] & csr[CSR_MIP]) == 0)
+                                    return steps;
+                                break;
+
+
+                            case 0x302:
+                                // mret
+                                if (this.prv != PRV_M) {
+                                    message.Debug("Error in mret: privilege_mode isn't allowed access");
+                                    message.Abort();
+                                    break;
+                                }
+                                this.pc = csr[CSR_MEPC] | 0;
+                                var s = csr[CSR_MSTATUS] | 0;
+                                var prev_prv = get_field(s, MSTATUS_MPP);
+                                s = set_field(s, MSTATUS_MIE, get_field(s, MSTATUS_MPIE));
+                                s = set_field(s, MSTATUS_MPIE, 1);
+                                s = set_field(s, MSTATUS_MPP, PRV_U);
+                                csr[CSR_MSTATUS] = s;
+                                this.prv = prev_prv;
+                                this.InvalidateTLB();
+                                break;
+
+                            case 0x120:
+                                // sfence.vma
                                 break;
 
                             default:
@@ -18418,7 +17787,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                              message.Debug("Error in flw: unaligned address");
                              message.Abort();
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0,VM_READ);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ)|0;
                         if(paddr == -1) break;
                         r[0] = this.ram.Read32(paddr);
                         f[rindex] = ff[0];
@@ -18430,7 +17799,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                              message.Debug("Error in flw: unaligned address");
                              message.Abort();
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0,VM_READ);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_READ)|0;
                         if(paddr == -1) break;
                         fi[(rindex<<1) + 0] = this.ram.Read32(paddr+0);
                         fi[(rindex<<1) + 1] = this.ram.Read32(paddr+4);
@@ -18460,7 +17829,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                              message.Debug("Error in fsw: unaligned address");
                              message.Abort();
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, r[0]);
                         break;
@@ -18471,7 +17840,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                              message.Debug("Error in fsd: unaligned address");
                              message.Abort();
                         }
-                        paddr = this.TranslateVM(rs1 + imm|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1 + imm|0, VM_WRITE)|0;
                         if (paddr == -1) break;
                         this.ram.Write32(paddr+0, fi[(rindex<<1) + 0]);
                         this.ram.Write32(paddr+4, fi[(rindex<<1) + 1]);
@@ -18486,7 +17855,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 break;
 
             case 0x53:
-                // fadd, fsub
+                // fadd, fsub, fcmp
                 rindex = (ins >> 7) & 0x1F;
                 switch((ins >> 25)&0x7F) {
                     
@@ -18567,6 +17936,14 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                         fs1 = f[(ins >> 15) & 0x1F];
                         fs2 = f[(ins >> 20) & 0x1F];
                         f[rindex] = fs1 * fs2;
+                        break;
+
+                    case 0x0C:
+                    case 0x0D:
+                        //fdiv.s, fdiv.d
+                        fs1 = f[(ins >> 15) & 0x1F];
+                        fs2 = f[(ins >> 20) & 0x1F];
+                        f[rindex] = fs1 / fs2;
                         break;
 
                     case 0x10: // single precision
@@ -18652,7 +18029,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 rs1 = r[(ins >> 15) & 0x1F];
                 rs2 = r[(ins >> 20) & 0x1F];
                 rindex = (ins >> 7) & 0x1F;
-                paddr = this.TranslateVM(rs1|0, VM_READ);
+                paddr = this.TranslateVM(rs1|0, VM_READ)|0;
                 if (paddr == -1) break;
 
                 switch((ins >> 27)&0x1F) {
@@ -18660,7 +18037,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x01:
                         // amoswap
                         r[rindex] = this.ram.Read32(paddr);
-                        paddr = this.TranslateVM(rs1|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1|0, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, rs2);
                         break;
@@ -18668,7 +18045,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x00:
                         // amoadd
                         r[rindex] = this.ram.Read32(paddr);
-                        paddr = this.TranslateVM(rs1|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1|0, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr,r[rindex] + rs2);
                         break;
@@ -18676,7 +18053,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x04:
                         // amoxor
                         r[rindex] = this.ram.Read32(paddr);
-                        paddr = this.TranslateVM(rs1|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1|0, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr,r[rindex] ^ rs2);
                         break;
@@ -18684,7 +18061,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x0C:
                         // amoand
                         r[rindex] = this.ram.Read32(paddr);
-                        paddr = this.TranslateVM(rs1|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1|0, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, r[rindex] & rs2);
                         break;
@@ -18692,7 +18069,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                     case 0x08:
                         // amoor
                         r[rindex] = this.ram.Read32(paddr);
-                        paddr = this.TranslateVM(rs1|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1|0, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, r[rindex] | rs2);
                         break;
@@ -18702,7 +18079,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                         r[rindex] = this.ram.Read32(paddr);
                         if((rs2 >> 0) > (r[rindex] >> 0)) r[0] = r[rindex];
                         else r[0] = rs2;
-                        paddr = this.TranslateVM(rs1|0, VM_WRITE);
+                        paddr = this.TranslateVM(rs1|0, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, r[0]);
                         break;
@@ -18712,7 +18089,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                         r[rindex] = this.ram.Read32(paddr);
                         if(rs2 < r[rindex]) r[0] = r[rindex];
                         else r[0] = rs2;
-                        paddr = this.TranslateVM(rs1, VM_WRITE);
+                        paddr = this.TranslateVM(rs1, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, r[0]);
                         break;
@@ -18722,7 +18099,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                         r[rindex] = this.ram.Read32(paddr);
                         if((rs2 >>> 0) > (r[rindex] >>> 0)) r[0] = r[rindex];
                         else r[0] = rs2;
-                        paddr = this.TranslateVM(rs1, VM_WRITE);
+                        paddr = this.TranslateVM(rs1, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, r[0]);
                         break;
@@ -18732,7 +18109,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                         r[rindex] = this.ram.Read32(paddr);
                         if((rs2 >>> 0) < (r[rindex] >>> 0)) r[0] = r[rindex];
                         else r[0] = rs2;
-                        paddr = this.TranslateVM(rs1, VM_WRITE);
+                        paddr = this.TranslateVM(rs1, VM_WRITE)|0;
                         if(paddr == -1) break;
                         this.ram.Write32(paddr, r[0]);
                         break;
@@ -18755,7 +18132,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                             break;
                         }
                         r[rindex] = 0x00;
-                        paddr = this.TranslateVM(rs1, VM_WRITE);
+                        paddr = this.TranslateVM(rs1, VM_WRITE)|0;
                         if (paddr == -1) break;
                         this.ram.Write32(paddr, rs2);
                         break;
@@ -18772,8 +18149,13 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 // fence
                 break;
 
+
             default:
-                message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + " not found at "+utils.ToHex(this.pc));
+                if ((ins&3) != 3) {
+                    message.Debug("Error in safecpu: Compressed Instruction " + utils.ToHex(ins&0xFFFF) + " not supported at "+utils.ToHex(this.pc-4));
+                } else {
+                    message.Debug("Error in safecpu: Instruction " + utils.ToHex(ins) + " not found at "+utils.ToHex(this.pc-4));
+                }
                 message.Abort();
                 break;
         }
@@ -18785,7 +18167,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
 
 module.exports = SafeCPU;
 
-},{"../messagehandler":28,"../utils":43,"./disassemble":34}],40:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48,"./disassemble":40}],45:[function(require,module,exports){
 // -------------------------------------------------
 // ----------------- SYSCALLS ----------------------
 // -------------------------------------------------
@@ -18811,7 +18193,6 @@ function SysCalls(ram) {
     this.file_pointer = []; //file descriptor is the index
     this.file_descriptor_offset = 9;
     this.elf8mem_offset = 0x00;
-
 }
 
 SysCalls.prototype.HandleSysCall = function (addr) {
@@ -18819,12 +18200,12 @@ SysCalls.prototype.HandleSysCall = function (addr) {
     addr = addr | 0;
     var ram = this.ram;
     var syscall_id = this.ram.Read32(addr);
-    //message.Debug("syscall_id " + syscall_id);
-    var argv = ["spike", "-m31", "-p1", "vmlinux"];
-    switch(syscall_id){
+    message.Debug("syscall_id " + syscall_id);
+    //var argv = ["spike", "pk", "a.out"];
+    var argv = ["pk", "a.out"];
+    switch(syscall_id) {
 
         case SYS_OPENAT:
-            //sys_openat
             var filename_pointer = this.ram.Read32(addr + 16);
             var filename = "";
             for(var i=0,c;;i++){
@@ -18835,7 +18216,8 @@ SysCalls.prototype.HandleSysCall = function (addr) {
                     filename += String.fromCharCode(c);
             }
             var url = filename;
-            utils.LoadBinaryResourceII("../sys/riscv/" + url, 
+            //message.Debug("load " + url);
+            utils.LoadBinaryResourceII("../riscv-sys/" + url, 
                 this.OnFileLoaded.bind(this), 
                 false, 
                 function(error){throw error;}
@@ -18844,7 +18226,6 @@ SysCalls.prototype.HandleSysCall = function (addr) {
             break;
 
         case SYS_PREAD:
-            //sys_pread
             var file_descriptor = this.ram.Read32(addr + 8);
             var file_address = this.file_descriptor_table[file_descriptor];
             var buffer_address = this.ram.Read32(addr + 16);
@@ -18863,12 +18244,10 @@ SysCalls.prototype.HandleSysCall = function (addr) {
             break;
 
         case SYS_CLOSE:
-            //sys_close
             this.ram.Write32(addr, 0);
             break;
 
         case SYS_FSTAT:
-            //sys_fstat
             var file_descriptor = this.ram.Read32(addr + 8);
             var stat_buffer_address = this.ram.Read32(addr + 16);
             this.ram.Write32(stat_buffer_address, 0); //unsigned long   Device. 
@@ -18895,25 +18274,23 @@ SysCalls.prototype.HandleSysCall = function (addr) {
             break;
 
         case SYS_WRITE:
-            //sys_write
-            var length = this.ram.Read32(addr + 8*3), i =0;
+            var length = this.ram.Read32(addr + 8*3);
+            var i = 0;
             var string_address = this.ram.Read32(addr + 8*2);
             while(i < length){
                 var c = this.ram.Read8(string_address + (i++));
-                this.ram.Write8Little(0x90000000 >> 0, c);
-                if (c == 0xA) this.ram.Write8(0x90000000 >> 0, 0xD);
+                this.ram.Write8Little(0x03000000 >> 0, c);
+                if (c == 0xA) this.ram.Write8(0x03000000 >> 0, 0xD);
             }
             this.ram.Write32(addr, i);
             break;
 
         case SYS_EXIT:
-            //sys_exit
             message.Debug("Program exited with sys_exit for inst at PC "+utils.ToHex(this.pc));
             message.Abort();
             break;
 
         case SYS_GETMAINVARS:
-            //sys_getmainvars
             var address = this.ram.Read32(addr + 8);
             var length = this.ram.Read32(addr + 16);
 
@@ -18952,7 +18329,7 @@ SysCalls.prototype.HandleSysCall = function (addr) {
 SysCalls.prototype.OnFileLoaded = function(buffer) {
     var buffer8 = new Uint8Array(buffer);
     var length = buffer8.length;
-message.Debug("On File Loaded " + length);
+    message.Debug("On File Loaded " + length);
     for(var i=0; i<length; i++) this.elf8mem[i+this.elf8mem_offset] = buffer8[i];
     this.file_descriptor_table[++this.file_descriptor_offset] = this.elf8mem_offset;
     this.elf8mem_offset += length;
@@ -18963,7 +18340,7 @@ message.Debug("On File Loaded " + length);
 
 module.exports = SysCalls;
 
-},{"../messagehandler":28,"../utils":43}],41:[function(require,module,exports){
+},{"../messagehandler":33,"../utils":48}],46:[function(require,module,exports){
 // -------------------------------------------------
 // ------------------- SYSTEM ----------------------
 // -------------------------------------------------
@@ -18976,11 +18353,9 @@ var RAM = require('./ram');
 var bzip2 = require('./bzip2');
 var elf = require('./elf');
 var Timer = require('./timer');
-var HTIF = require('./riscv/htif');
-
-// CPU
-var OR1KCPU = require('./or1k');
-var RISCVCPU = require('./riscv');
+var InitOpenRISC = require('./init_openrisc');
+var InitRISCV = require('./init_riscv');
+var FS = require('./filesystem/filesystem');
 
 // Devices
 var UARTDev = require('./dev/uart');
@@ -18990,6 +18365,9 @@ var FBDev = require('./dev/framebuffer');
 var EthDev = require('./dev/ethmac');
 var ATADev = require('./dev/ata');
 var RTCDev = require('./dev/rtc');
+var CLINTDev = require('./dev/clint');
+var PLICDev = require('./dev/plic');
+var ROMDev = require('./dev/rom');
 var TouchscreenDev = require('./dev/touchscreen');
 var KeyboardDev = require('./dev/keyboard');
 var SoundDev = require('./dev/sound');
@@ -19001,33 +18379,6 @@ var VirtioNET = require('./dev/virtio/net');
 var VirtioBlock = require('./dev/virtio/block');
 var VirtioGPU = require('./dev/virtio/gpu');
 var VirtioConsole = require('./dev/virtio/console');
-var FS = require('./filesystem/filesystem');
-
-/* 
-    Heap Layout
-    ===========
-    The heap is needed by the asm.js CPU. 
-    For compatibility all CPUs use the same layout
-    by using the different views of typed arrays
-
-    ------ Core 1 ------
-    0x0     -  0x7F     32 CPU registers 
-    0x80    -  0x1FFF   CPU specific, usually unused or temporary data
-    0x2000  -  0x3FFF   group 0 (system control and status)
-    0x4000  -  0x5FFF   group 1 (data MMU)
-    0x6000  -  0x7FFF   group 2 (instruction MMU)
-    ------ Core 2 ------
-    0x8000  -  0x807F   32 CPU registers
-    0x8080  -  0x9FFF   CPU specific, usually unused or temporary data
-    0xA000  -  0xBFFF   group 0 (system control and status)
-    0xC000  -  0xDFFF   group 1 (data MMU)
-    0xE000  -  0xFFFF   group 2 (instruction MMU)
-    ------ Core 3 ------
-    ...
-    ------- RAM --------
-    0x100000 -  ...     RAM
-*/
-
 
 var SYSTEM_RUN = 0x1;
 var SYSTEM_STOP = 0x2;
@@ -19039,7 +18390,6 @@ function System() {
     message.Register("execute", this.MainLoop.bind(this));
     message.Register("Init", this.Init.bind(this) );
     message.Register("Reset", this.Reset.bind(this) );
-    message.Register("ChangeCore", this.ChangeCPU.bind(this) );
     message.Register("PrintOnAbort", this.PrintState.bind(this) );
 
     message.Register("GetIPS", function(data) {
@@ -19047,25 +18397,6 @@ function System() {
         this.ips=0;
     }.bind(this));
 }
-
-System.prototype.CreateCPU = function(cpuname, arch) {
-    try {
-        if (arch == "or1k") {
-            this.cpu = new OR1KCPU(cpuname, this.ram, this.heap, this.ncores);
-        } else
-        if (arch == "riscv") {
-            this.cpu = new RISCVCPU(cpuname, this.ram, this.htif, this.heap, this.ncores);
-        } else
-            throw "Architecture " + arch + " not supported";
-    } catch (e) {
-        message.Debug("Error: failed to create CPU:" + e);
-    }
-};
-
-
-System.prototype.ChangeCPU = function(cpuname) {
-    this.cpu.switchImplementation(cpuname);
-};
 
 System.prototype.Reset = function() {
     this.status = SYSTEM_STOP;
@@ -19078,102 +18409,15 @@ System.prototype.Reset = function() {
 };
 
 System.prototype.Init = function(system) {
-    this.status = SYSTEM_STOP;
-    this.memorysize = system.memorysize;
+    message.Debug("Init with following JSON structure: ");
+    message.Debug(system);
 
+    this.status = SYSTEM_STOP;
+
+    this.arch = system.arch;
+    this.memorysize = system.memorysize;
     this.ncores = system.ncores;
     if (!system.ncores) system.ncores = 1;
-
-    // this must be a power of two.
-    var ramoffset = 0x100000;
-    this.heap = new ArrayBuffer(this.memorysize*0x100000); 
-    this.memorysize--; // - the lower 1 MB are used for the cpu cores
-    this.ram = new RAM(this.heap, ramoffset);
-
-    if (system.arch == "riscv") {
-        this.htif = new HTIF(this.ram, this);
-    }
-
-    this.CreateCPU(system.cpu, system.arch);
-
-    this.devices = [];
-    this.devices.push(this.cpu);
-
-    if (system.arch == "or1k") {
-
-        this.irqdev = new IRQDev(this);
-        this.timerdev = new TimerDev();
-        this.uartdev0 = new UARTDev(0, this, 0x2);
-        this.uartdev1 = new UARTDev(1, this, 0x3);
-        this.ethdev = new EthDev(this.ram, this);
-        this.ethdev.TransmitCallback = function(data){
-            message.Send("ethmac", data);
-        };
-
-        this.fbdev = new FBDev(this.ram);
-        this.atadev = new ATADev(this);
-        this.tsdev = new TouchscreenDev(this);
-        this.kbddev = new KeyboardDev(this);
-        this.snddev = new SoundDev(this, this.ram);
-        this.rtcdev = new RTCDev(this);
-
-        this.filesystem = new FS();
-        this.virtio9pdev = new Virtio9p(this.ram, this.filesystem);
-        this.virtiodev1 = new VirtIODev(this, 0x6, this.ram, this.virtio9pdev);
-        this.virtioinputdev = new VirtioInput(this.ram);
-        this.virtionetdev = new VirtioNET(this.ram);
-        this.virtioblockdev = new VirtioBlock(this.ram);
-        this.virtiodummydev = new VirtioDummy(this.ram);
-        this.virtiogpudev = new VirtioGPU(this.ram);
-        this.virtioconsoledev = new VirtioConsole(this.ram);
-        this.virtiodev2 = new VirtIODev(this, 0xB, this.ram, this.virtiodummydev);
-        this.virtiodev3 = new VirtIODev(this, 0xC, this.ram, this.virtiodummydev);
-
-        this.devices.push(this.irqdev);
-        this.devices.push(this.timerdev);
-        this.devices.push(this.uartdev0);
-        this.devices.push(this.uartdev1);
-        this.devices.push(this.ethdev);
-        this.devices.push(this.fbdev);
-        this.devices.push(this.atadev);
-        this.devices.push(this.tsdev);
-        this.devices.push(this.kbddev);
-        this.devices.push(this.snddev);
-        this.devices.push(this.rtcdev);
-        this.devices.push(this.virtio9pdev);
-        this.devices.push(this.virtiodev1);
-        this.devices.push(this.virtiodev2);
-        this.devices.push(this.virtiodev3);
-
-        this.devices.push(this.virtioinputdev);
-        this.devices.push(this.virtionetdev);
-        this.devices.push(this.virtioblockdev);
-        this.devices.push(this.virtiodummydev);
-        this.devices.push(this.virtiogpudev);
-        this.devices.push(this.virtioconsoledev);
-
-        this.ram.AddDevice(this.uartdev0,   0x90000000, 0x7);
-        this.ram.AddDevice(this.fbdev,      0x91000000, 0x1000);
-        this.ram.AddDevice(this.ethdev,     0x92000000, 0x1000);
-        this.ram.AddDevice(this.tsdev,      0x93000000, 0x1000);
-        this.ram.AddDevice(this.kbddev,     0x94000000, 0x100);
-        this.ram.AddDevice(this.uartdev1,   0x96000000, 0x7);
-        this.ram.AddDevice(this.virtiodev1, 0x97000000, 0x1000);
-        this.ram.AddDevice(this.snddev,     0x98000000, 0x400);
-        this.ram.AddDevice(this.rtcdev,     0x99000000, 0x1000);
-        this.ram.AddDevice(this.irqdev,     0x9A000000, 0x1000);
-        this.ram.AddDevice(this.timerdev,   0x9B000000, 0x1000);
-        this.ram.AddDevice(this.virtiodev2, 0x9C000000, 0x1000);
-        this.ram.AddDevice(this.virtiodev3, 0x9D000000, 0x1000);
-        this.ram.AddDevice(this.atadev,     0x9E000000, 0x1000);
-    } else 
-    if (system.arch == "riscv") {
-        // at the moment the htif interface is part of the CPU initialization.
-        // However, it uses uartdev0
-        this.uartdev0 = new UARTDev(0, this, 0x2);
-        this.devices.push(this.uartdev0);
-        this.ram.AddDevice(this.uartdev0,   0x90000000, 0x7);
-    }
 
     this.ips = 0; // external instruction per second counter
     this.idletime = 0; // start time of the idle routine
@@ -19184,11 +18428,48 @@ System.prototype.Init = function(system) {
     this.loopspersecond = 100; // main loops per second, to keep the system responsive
 
     this.timer = new Timer(this.ticksperms, this.loopspersecond);
+
+    message.Debug("Allocate " + this.memorysize + " MB");
+    // this must be a power of two.
+    if ((system.arch == "or1k") && (system.cpu == "dynamic")  && (typeof WebAssembly !== "undefined")) {
+        message.Debug("Use webassembly memory");
+        this.memory = new WebAssembly.Memory({initial: this.memorysize*16, maximum: this.memorysize*16});
+        this.heap = this.memory.buffer;
+    } else {
+        this.heap = new ArrayBuffer(this.memorysize*0x100000);
+    }
+    var ramoffset = 0x100000;
+    this.memorysize--; // - the lower 1 MB are used for the cpu cores
+    this.ram = new RAM(this.heap, ramoffset);
+    if (this.memory) this.ram.memory = this.memory;
+    this.csr = new Int32Array(this.heap, 0x2000, 4096);
+
+    this.devices = [];
+    this.filesystem = new FS();
+    this.virtio9pdev = new Virtio9p(this.ram, this.filesystem);
+
+    try {
+        if (system.arch == "or1k") {
+            InitOpenRISC(this, system);
+        } else
+        if (system.arch == "riscv") {
+            InitRISCV(this, system);
+        } else {
+            throw "Architecture " + system.arch + " not supported";
+        }
+    } catch (e) {
+        message.Debug("Error: failed to create SoC: " + e);
+        message.Abort();
+    }
 };
 
 System.prototype.RaiseInterrupt = function(line) {
     //message.Debug("Raise " + line);
-    this.cpu.RaiseInterrupt(line, -1); // raise all cores
+    if (this.arch == "riscv") {
+        this.plicdev.RaiseInterrupt(line);
+    } else {
+        this.cpu.RaiseInterrupt(line, -1); // raise all cores
+    }
     if (this.status == SYSTEM_HALT)
     {
         this.status = SYSTEM_RUN;
@@ -19201,7 +18482,11 @@ System.prototype.RaiseInterrupt = function(line) {
 };
 
 System.prototype.ClearInterrupt = function (line) {
-    this.cpu.ClearInterrupt(line, -1); // clear all cores
+    if (this.arch == "riscv") {
+        this.plicdev.ClearInterrupt(line);
+    } else {
+        this.cpu.ClearInterrupt(line, -1); // clear all cores
+    }
 };
 
 System.prototype.RaiseSoftInterrupt = function(line, cpuid) {
@@ -19272,26 +18557,28 @@ System.prototype.PatchKernel = function(length)
 System.prototype.OnKernelLoaded = function(buffer) {
     this.SendStringToTerminal("Decompressing kernel...\r\n");
     var buffer8 = new Uint8Array(buffer);
-    var length = 0;
+    var length = buffer.byteLength;
 
     if (elf.IsELF(buffer8)) {
-        elf.Extract(buffer8, this.ram.uint8mem);
+        elf.Extract(buffer8, this.ram);
     } else 
     if (bzip2.IsBZIP2(buffer8)) {
+        length = 0;
         bzip2.simple(buffer8, function(x){this.ram.uint8mem[length++] = x;}.bind(this));
         if (elf.IsELF(this.ram.uint8mem)) {
             var temp = new Uint8Array(length);
             for(var i=0; i<length; i++) {
                 temp[i] = this.ram.uint8mem[i];
             }
-            elf.Extract(temp, this.ram.uint8mem);
+            elf.Extract(temp, this.ram);
         }
     } else {
-        length = buffer8.length;
         for(var i=0; i<length; i++) this.ram.uint8mem[i] = buffer8[i];
     }
-    this.PatchKernel(length);
+
+    // OpenRISC CPU uses Big Endian
     if (this.cpu.littleendian == false) {
+        this.PatchKernel(length);
         this.ram.Little2Big(length);
     }
     message.Debug("Kernel loaded: " + length + " bytes");
@@ -19332,7 +18619,6 @@ System.prototype.HandleHalt = function() {
 System.prototype.MainLoop = function() {
     if (this.status != SYSTEM_RUN) return;
     message.Send("execute", 0);
-
     // execute the cpu loop for "instructionsperloop" instructions.
     var stepsleft = this.cpu.Step(this.timer.instructionsperloop, this.timer.timercyclesperinstruction);
     //message.Debug(stepsleft);
@@ -19358,7 +18644,7 @@ System.prototype.MainLoop = function() {
 
 module.exports = System;
 
-},{"./bzip2":2,"./dev/ata":3,"./dev/ethmac":4,"./dev/framebuffer":5,"./dev/irq":6,"./dev/keyboard":7,"./dev/rtc":8,"./dev/sound":9,"./dev/timer":10,"./dev/touchscreen":11,"./dev/uart":12,"./dev/virtio":13,"./dev/virtio/9p":14,"./dev/virtio/block":15,"./dev/virtio/console":16,"./dev/virtio/dummy":17,"./dev/virtio/gpu":18,"./dev/virtio/input":19,"./dev/virtio/net":21,"./elf":22,"./filesystem/filesystem":23,"./messagehandler":28,"./or1k":30,"./ram":33,"./riscv":38,"./riscv/htif":37,"./timer":42,"./utils":43}],42:[function(require,module,exports){
+},{"./bzip2":2,"./dev/ata":3,"./dev/clint":4,"./dev/ethmac":5,"./dev/framebuffer":6,"./dev/irq":7,"./dev/keyboard":8,"./dev/plic":9,"./dev/rom":10,"./dev/rtc":11,"./dev/sound":12,"./dev/timer":13,"./dev/touchscreen":14,"./dev/uart":15,"./dev/virtio":16,"./dev/virtio/9p":17,"./dev/virtio/block":18,"./dev/virtio/console":19,"./dev/virtio/dummy":20,"./dev/virtio/gpu":21,"./dev/virtio/input":22,"./dev/virtio/net":24,"./elf":25,"./filesystem/filesystem":26,"./init_openrisc":31,"./init_riscv":32,"./messagehandler":33,"./ram":39,"./timer":47,"./utils":48}],47:[function(require,module,exports){
 // -------------------------------------------------
 // ------------------- TIMER -----------------------
 // -------------------------------------------------
@@ -19388,7 +18674,7 @@ function Timer(_ticksperms, _loopspersecond) {
     this.nins = 0;
     this.lastlooptime = -1; // last time the loop was executed in ms, without idle in between
 
-    this.ipms = 5000; // initial guess for: 5 MIPS
+    this.ipms = 10000; // initial guess for: 10 MIPS
     this.instructionsperloop = 0;  // return value
     this.timercyclesperinstruction = 10; // return value
     this.UpdateTimings();
@@ -19408,7 +18694,7 @@ Timer.prototype.Update = function(nins, ticks, gotoidle) {
 Timer.prototype.UpdateTimings = function(_nins, gotoidle) {
     this.instructionsperloop = Math.floor(this.ipms*1000. / this.loopspersecond);
     this.instructionsperloop = this.instructionsperloop<2000?2000:this.instructionsperloop;
-    this.instructionsperloop = this.instructionsperloop>4000000?4000000:this.instructionsperloop;
+    this.instructionsperloop = this.instructionsperloop>100000000?100000000:this.instructionsperloop;
 
     this.timercyclesperinstruction = Math.floor(this.ticksperms * 64 / this.ipms * this.correction);
     this.timercyclesperinstruction = this.timercyclesperinstruction<=1?1:this.timercyclesperinstruction;
@@ -19498,7 +18784,7 @@ Timer.prototype.GlobalUpdate = function(ticks) {
 
 module.exports = Timer;
 
-},{"./messagehandler":28,"./utils":43}],43:[function(require,module,exports){
+},{"./messagehandler":33,"./utils":48}],48:[function(require,module,exports){
 // -------------------------------------------------
 // ------------------ Utils ------------------------
 // -------------------------------------------------
@@ -19714,7 +19000,7 @@ module.exports.LoadBinaryResourceII = LoadBinaryResourceII;
 module.exports.LoadTextResource = LoadTextResource;
 
 
-},{}],44:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 // -------------------------------------------------
 // -------------------- Worker ---------------------
 // -------------------------------------------------
@@ -19725,4 +19011,4 @@ var System = require('./system');
 new System();
 message.Send("WorkerReady", 0);
 
-},{"./messagehandler":28,"./system":41}]},{},[44]);
+},{"./messagehandler":33,"./system":46}]},{},[49]);

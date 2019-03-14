@@ -101,6 +101,7 @@ function LoadBinaryResourceII(url, OnSuccess, NonBlocking, OnError) {
 
 function LoadTextResource(url, OnSuccess, OnError) {
     var req = new XMLHttpRequest();
+    console.log("url " + url);
     req.open('GET', url, true);
     //req.overrideMimeType('text/xml');
     req.onreadystatechange = function () {

@@ -1,7 +1,3 @@
-/* eslint-disable no-multi-spaces, no-shadow, func-names, no-cond-assign, no-else-return */
-/* eslint no-underscore-dangle: ["error", { "allowAfterThis": true }] */
-// TODO: Fix the underlying issues instead of disabling ESLint
-
 /* global Buffer, saveAs:false */
 import ko from 'knockout';
 import templateMarkup from 'text!./file-browser.html';
@@ -80,7 +76,7 @@ class Filebrowser {
 
                         $.notific8('"' + itemName + '" is loaded', confirmNotific8Options);
                         $('span:contains("Code")').click().blur();
-                    } catch (e) {
+                    } catch (error) {
                         $.notific8('Cannot load "' + itemName + '"', warningNotific8Options);
                     }
                 }
@@ -181,7 +177,7 @@ class Filebrowser {
                                 try {
                                     self.fs.readFileSync(itemPath + '/' + result).toString('binary');
                                     bootbox.alert('File already exists!');
-                                } catch (e) {
+                                } catch (error) {
                                     self.fs.writeFile(itemPath + '/' + result, '');
                                 }
                             }
@@ -193,7 +189,7 @@ class Filebrowser {
                     } else if (action === 'downloadDir') {
                         const zip = new JSZip();
 
-                        const addChildren = (zipNode, itemPath) => {
+                        const addChildren = (zipNode) => {
                             const children = self.fs.getDirectoryChildren(itemPath);
 
                             for (let i = 0; i < children.length; i++) {
@@ -216,22 +212,22 @@ class Filebrowser {
                         bootbox.dialog({
                             title: 'Clone a GitHub repo into \'' + itemName + '\'...',
                             message: '<div>'
-                                +     '<div class="row">'
-                                +         '<label class="col-sm-2 control-label"><small>Username (optional)</small></label>'
-                                +         '<div class="col-sm-4">'
-                                +             '<input id="githubUsername" class="form-control input-sm" type="text" maxlen=256>'
-                                +         '</div>'
-                                +         '<label class="col-sm-2 control-label"><small>Password</small></label>'
-                                +         '<div class="col-sm-4">'
-                                +             '<input id="githubPassword" class="form-control input-sm" type="password" maxlen=256>'
-                                +         '</div>'
-                                +     '</div>'
-                                +     '<div class="row">'
-                                +         '<label class="col-sm-2 control-label"><small>Repo URI</small></label>'
-                                +         '<div class="col-sm-10">'
-                                +             '<input id="githubRepo" class="form-control input-sm" type="text" maxlen=256 placeholder="username/repo-name">'
-                                +         '</div>'
-                                +     '</div>'
+                                + '<div class="row">'
+                                + '<label class="col-sm-2 control-label"><small>Username (optional)</small></label>'
+                                + '<div class="col-sm-4">'
+                                + '<input id="githubUsername" class="form-control input-sm" type="text" maxlen=256>'
+                                + '</div>'
+                                + '<label class="col-sm-2 control-label"><small>Password</small></label>'
+                                + '<div class="col-sm-4">'
+                                + '<input id="githubPassword" class="form-control input-sm" type="password" maxlen=256>'
+                                + '</div>'
+                                + '</div>'
+                                + '<div class="row">'
+                                + '<label class="col-sm-2 control-label"><small>Repo URI</small></label>'
+                                + '<div class="col-sm-10">'
+                                + '<input id="githubRepo" class="form-control input-sm" type="text" maxlen=256 placeholder="username/repo-name">'
+                                + '</div>'
+                                + '</div>'
                                 + '</div>',
                             buttons: {
                                 success: {
@@ -265,22 +261,22 @@ class Filebrowser {
                         bootbox.dialog({
                             title: 'Push \'' + itemName + '\' to a GitHub repo...',
                             message: '<div>'
-                                +     '<div class="row">'
-                                +         '<label class="col-sm-2 control-label"><small>Username</small></label>'
-                                +         '<div class="col-sm-4">'
-                                +             '<input id="githubUsername" class="form-control input-sm" type="text" maxlen=256>'
-                                +         '</div>'
-                                +         '<label class="col-sm-2 control-label"><small>Password</small></label>'
-                                +         '<div class="col-sm-4">'
-                                +             '<input id="githubPassword" class="form-control input-sm" type="password" maxlen=256>'
-                                +         '</div>'
-                                +     '</div>'
-                                +     '<div class="row">'
-                                +         '<label class="col-sm-2 control-label"><small>Repo Name</small></label>'
-                                +         '<div class="col-sm-10">'
-                                +             '<input id="githubSaveRepo" class="form-control input-sm" type="text" maxlen=256 placeholder="sysprog-save">'
-                                +         '</div>'
-                                +     '</div>'
+                                + '<div class="row">'
+                                + '<label class="col-sm-2 control-label"><small>Username</small></label>'
+                                + '<div class="col-sm-4">'
+                                + '<input id="githubUsername" class="form-control input-sm" type="text" maxlen=256>'
+                                + '</div>'
+                                + '<label class="col-sm-2 control-label"><small>Password</small></label>'
+                                + '<div class="col-sm-4">'
+                                + '<input id="githubPassword" class="form-control input-sm" type="password" maxlen=256>'
+                                + '</div>'
+                                + '</div>'
+                                + '<div class="row">'
+                                + '<label class="col-sm-2 control-label"><small>Repo Name</small></label>'
+                                + '<div class="col-sm-10">'
+                                + '<input id="githubSaveRepo" class="form-control input-sm" type="text" maxlen=256 placeholder="sysprog-save">'
+                                + '</div>'
+                                + '</div>'
                                 + '</div>',
                             buttons: {
                                 success: {
@@ -335,15 +331,15 @@ class Filebrowser {
                 const droppedLocationItem = $(e.target);
                 const itemId = droppedLocationItem.data('id');
                 const writeDroppedFile = (i, done) => {
-                    (function (i) {
-                        if (i === files.length) {
+                    (function (lenght) {
+                        if (lenght === files.length) {
                             return done();
                         }
 
                         const file = files[i];
                         const reader = new FileReader();
                         reader.file = file;
-                        reader.onload = (e) => {
+                        reader.onload = () => {
                             if (itemId === undefined) {
                                 fs.writeFile('/' + file.name, new Buffer(reader.result, 'binary'));
                                 writeDroppedFile(i + 1, done);
@@ -385,7 +381,7 @@ class Filebrowser {
                     // open
                     $curr.data('status', 'opened');
 
-                    if (this.directoryState.indexOf(data.path) === -1)  {
+                    if (this.directoryState.indexOf(data.path) === -1) {
                         this.directoryState.push(data.path);
                         this.directoryState.sort();
                     }
@@ -403,7 +399,7 @@ class Filebrowser {
                     // collapse
                     $curr.data('status', 'closed');
 
-                    this.directoryState = this._removeElemFromArray(this.directoryState, data.path).sort();
+                    this.directoryState = this.removeElemFromArray(this.directoryState, data.path).sort();
 
                     $curr
                         .find('i')
@@ -448,15 +444,17 @@ class Filebrowser {
         });
     }
 
-    _removeElemFromArray(arr) {
+    removeElemFromArray(arr) {
         let what;
         const a = arguments;
         let L = a.length;
         let ax;
         while (L > 1 && arr.length) {
             what = a[--L];
-            while ((ax = arr.indexOf(what)) !== -1) {
+            ax = arr.indexOf(what);
+            while (ax !== -1) {
                 arr.splice(ax, 1);
+                ax = arr.indexOf(what);
             }
         }
         return arr;
@@ -504,7 +502,6 @@ class Filebrowser {
                 if (b.name < a.name) {
                     return 1;
                 }
-                return 0;
             } else if (a.isDirectory && !b.isDirectory) {
                 return -1;
             } else if (!a.isDirectory && b.isDirectory) {
@@ -516,8 +513,8 @@ class Filebrowser {
                 if (b.name < a.name) {
                     return 1;
                 }
-                return 0;
             }
+            return 0;
         });
 
         // assign new children
@@ -547,7 +544,7 @@ class Filebrowser {
                 parentPath: newPath || '/',
                 path: path,
                 id: this.generateName(),
-                name: this._escape(children[i].name),
+                name: this.escape(children[i].name),
                 depth: self.depth + 1,
                 children: []
             };
@@ -667,7 +664,7 @@ class Filebrowser {
         this.init();
     }
 
-    _escape(unsafe) {
+    escape(unsafe) {
         return unsafe
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')

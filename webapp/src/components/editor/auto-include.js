@@ -4,7 +4,7 @@ import * as SysGlobalObservables from 'app/sys-global-observables';
 class AutoIncluder {
     constructor() {
         const self = this;
-        this.createMapping();
+        // this.createMapping();
 
         this.browser = SysGlobalObservables.observableFS;
         this.browser.subscribe((newBrowser) => {

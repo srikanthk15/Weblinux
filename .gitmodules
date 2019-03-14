@@ -1,0 +1,3 @@
+[submodule "jor1k/Openrisc-sys"]
+	path = jor1k/Openrisc-sys
+	url = https://github.com/s-macke/jor1k-sysroot.git
