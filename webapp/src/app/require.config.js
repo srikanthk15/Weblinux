@@ -26,7 +26,7 @@ require.config({
         "ace": "bower_modules/ace/lib/ace",
         "typeahead-jquery": "bower_modules/typeahead.js/dist/typeahead.jquery.min",
         "bloodhound": "bower_modules/typeahead.js/dist/bloodhound.min", // exports window global "Bloodhound"
-        "FileSaver": "bower_modules/FileSaver/FileSaver.min", // exports window global "saveAs"
+        "FileSaver": "bower_modules/FileSaver/dist/FileSaver.min", // exports window global "saveAs"
         "Blob": "bower_modules/Blob/Blob", // exports window global "Blob"
         "bootstrap-contextmenu": "bower_modules/bootstrap-contextmenu/bootstrap-contextmenu",
         "bootbox": "bower_modules/bootbox.js/bootbox",
