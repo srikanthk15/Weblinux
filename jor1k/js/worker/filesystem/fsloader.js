@@ -46,15 +46,17 @@ FSLoader.prototype.HandleDirContents = function(list, parentid) {
          inode.uid = tag.uid|0;
          inode.gid = tag.gid|0;
          inode.parentid = parentid;
+         this.fs.inodes[inode.parentid].nlinks++;
          inode.mode = parseInt(tag.mode, 8);
 
          if (tag.path) { // link
              inode.mode = S_IFLNK | S_IRWXUGO;
              inode.symlink = tag.path;
              this.fs.PushInode(inode);
-         } else if (!tag.size) { // dir
+         } else if (typeof tag.size === "undefined") { // dir
              inode.mode |= S_IFDIR;
              inode.updatedir = true;
+             inode.nlinks = 2; // . and ..
              this.fs.PushInode(inode);
              if (tag.child)
                  this.HandleDirContents(tag.child, id != -1 ? id : this.fs.inodes.length-1);
@@ -82,7 +84,7 @@ FSLoader.prototype.OnJSONLoaded = function(fsxml)
 
     this.sysrootdir = t.src;
     if (String(this.sysrootdir) !== this.sysrootdir) message.Debug("No sysroot (src tag)!");
-    this.sysrootdir += "/";
+    this.sysrootdir = this.fs.userinfo.path + this.sysrootdir + "/";
 
     this.HandleDirContents(t.fs, 0);
 

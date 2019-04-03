@@ -1,4 +1,4 @@
-require=(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+require=(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 //download.js v3.1, by dandavis; 2008-2014. [CCBY2] see http://danml.com/download.html for tests/usage
 // v1 landed a FF+Chrome compat way of downloading strings to local un-named files, upgraded to use a hidden frame and optional mime
 // v2 added named files via a[download], msSaveBlob, IE (10+) support, and window.URL support for larger+faster saves than dataURLs
@@ -343,7 +343,11 @@ function Filesystem(syncURL, userid) {
 }
 
 Filesystem.prototype.TAR = function(path) {
-    message.Register("tar", function(d){download(d, "user.tar", "application/x-tar");} );
+    if (path == "") {
+        path = "/home/user";
+    }
+    var arrayPath = path.split('/');
+    message.Register("tar", function(d){download(d, arrayPath[arrayPath.length-1]+".tar", "application/x-tar");} );
     message.Send("tar", path);
 }
 
@@ -368,11 +372,14 @@ Filesystem.prototype.OnSync = function(d) {
     );
 }
 
-Filesystem.prototype.UploadExternalFile = function(f) {
+Filesystem.prototype.UploadExternalFile = function(path, f) {
     var reader = new FileReader();
+    if (path.slice(-1) != '/') {
+        path += '/';
+    }
     reader.onload = function(e) {
         message.Send("MergeFile",
-        {name: "home/user/"+f.name, data: new Uint8Array(reader.result)});
+        {name: path+f.name, data: new Uint8Array(reader.result)});
     }.bind(this);
     reader.readAsArrayBuffer(f);
 }
@@ -543,6 +550,7 @@ function LoopSoundBuffer(samplerate) {
 
 LoopSoundBuffer.prototype.SetRate = function(rate) {
     if (this.samplerate == rate) return;
+    if (typeof this.context === "undefined") return;
     this.samplerate = rate;
     this.periodsize = Math.floor(this.samplerate/4); // 250ms
     this.sampleslen = this.periodsize*this.nperiods;
@@ -563,6 +571,7 @@ LoopSoundBuffer.prototype.OnEnded = function()
 LoopSoundBuffer.prototype.Enabled = function(e)
 {
     this.enabled = e;
+    if (typeof this.context === "undefined") return;
     if (!e) return;
     this.period = 0;
     this.basetime = this.context.currentTime;
@@ -830,6 +839,7 @@ var Colors = new Array(
     "#000077", "#770077", "#007777", "#777777"
 );
 
+
 // constructor
 function Terminal(nrows, ncolumns, elemId) {
     this.nrows = nrows;
@@ -875,12 +885,9 @@ function Terminal(nrows, ncolumns, elemId) {
 
     this.utf8converter = new UTF8.UTF8StreamToUnicode();
 
-    this.trows = 40;
-    this.brows = this.trows - this.nrows;
-    this.bufferp = 0;
-    this.screen = new Array(this.trows);
-    this.color = new Array(this.trows);
-    for (var i = 0; i < this.trows; i++) {
+    this.screen = new Array(this.nrows);
+    this.color = new Array(this.nrows);
+    for (var i = 0; i < this.nrows; i++) {
         this.updaterow[i] = 1;
         this.screen[i] = new Uint16Array(this.ncolumns);
         this.color[i]  = new Uint16Array(this.ncolumns);
@@ -890,13 +897,8 @@ function Terminal(nrows, ncolumns, elemId) {
             this.color[i][j] = this.attr_color;
         }
     }
-    this.deletedScreenRow = this.screen[0];
-    this.deletedColorRow = this.color[0];
-    //message.Debug("Inside constructor");
     this.UpdateScreen();
     this.Blink();
-
-    //if (!this.canvas) this.Table.addEventListener("wheel", this.UpdateScreenForScroll.bind(this));
 }
 
 // Stop blinking cursor when the VM is paused
@@ -929,31 +931,10 @@ Terminal.prototype.Blink = function() {
     window.setTimeout(this.Blink.bind(this), 500); // update every half second
 };
 
-Terminal.prototype.deepCopy = function(oldObj) {
-    var newObj = oldObj;
-    if (oldObj && typeof oldObj === 'object') {
-        newObj = Object.prototype.toString.call(oldObj) === "[object Array]" ? [] : {};
-        for (var i in oldObj) {
-            newObj[i] = this.deepCopy(oldObj[i]);
-        }
-    }
-    return newObj;
-}
-
 Terminal.prototype.DeleteRow = function(row) {
-    var deletedScreenRow = this.deepCopy(this.screen[this.brows + row]);
-    var deletedColorRow = this.deepCopy(this.color[this.brows + row]);
-    if(row == 23){
-        for(var i = 0;i < this.brows - 1;i++){
-            this.screen[i] = this.screen[i + 1];
-            this.color[i] = this.color[i + 1];
-        }
-        this.screen[this.brows - 1] = deletedScreenRow;
-        this.color[this.brows - 1] = deletedColorRow;
-    }
     for (var j = 0; j < this.ncolumns; j++) {
-        this.screen[this.brows + row][j] = 0x20;
-        this.color[this.brows + row][j] = this.attr_color;
+        this.screen[row][j] = 0x20;
+        this.color[row][j] = this.attr_color;
     }
     this.PrepareUpdateRow(row);
 };
@@ -961,8 +942,8 @@ Terminal.prototype.DeleteRow = function(row) {
 Terminal.prototype.DeleteArea = function(row, column, row2, column2) {
     for (var i = row; i <= row2; i++) {
         for (var j = column; j <= column2; j++) {
-            this.screen[this.brows + i][j] = 0x20;
-            this.color[this.brows + i][j] = this.attr_color;
+            this.screen[i][j] = 0x20;
+            this.color[i][j] = this.attr_color;
         }
         this.PrepareUpdateRow(i);
     }
@@ -971,13 +952,13 @@ Terminal.prototype.DeleteArea = function(row, column, row2, column2) {
 
 Terminal.prototype.UpdateRowCanvas = function(row) {
     var y = row << 4;
-    var line = this.screen[this.brows + row];
-    var c = this.color[this.brows + row][0]|0;
+    var line = this.screen[row];
+    var c = this.color[row][0]|0;
     var n = 0;
 
     for (var column = 0; column < this.ncolumns; column++) {
 
-        var cnew = this.color[this.brows + row][column]|0;
+        var cnew = this.color[row][column]|0;
 
         if (this.cursorvisible)
         if (row == this.cursory)
@@ -1043,43 +1024,14 @@ Terminal.prototype.GetSpan = function(c, line, idx, n) {
 
 Terminal.prototype.UpdateRowTable = function(row) {
     var y = row << 4;
-    var line = this.screen[this.brows + row];
-    var c = this.color[this.brows + row][0]|0;
+    var line = this.screen[row];
+    var c = this.color[row][0]|0;
     var n = 0;
     var html = "";
 
     for (var column = 0; column < this.ncolumns; column++) {
 
-        var cnew = this.color[this.brows + row][column]|0;
-
-        if (this.cursorvisible)
-        if (row == this.cursory)
-        if (column == this.cursorx) {
-            cnew |= 0x600;
-        }
-
-        if (c != cnew) {
-            html += this.GetSpan(c, line, column - n, n);
-            c = cnew;
-            n = 0;
-        }
-        n++;
-    }
-    html += this.GetSpan(c, line, column - n, n);
-    this.rowelements[this.nrows - row - 1].innerHTML = html;
-
-};
-
-Terminal.prototype.UpdateRowTableForScroll = function(row) {
-    var y = row << 4;
-    var line = this.screen[this.brows + row - this.bufferp];
-    var c = this.color[this.brows + row - this.bufferp][0]|0;
-    var n = 0;
-    var html = "";
-
-    for (var column = 0; column < this.ncolumns; column++) {
-
-        var cnew = this.color[this.brows + row - this.bufferp][column]|0;
+        var cnew = this.color[row][column]|0;
 
         if (this.cursorvisible)
         if (row == this.cursory)
@@ -1100,8 +1052,8 @@ Terminal.prototype.UpdateRowTableForScroll = function(row) {
 };
 
 Terminal.prototype.UpdateScreen = function() {
-    var nupdated = 0,i = 0;
-    for (i = 0; i < this.nrows; i++) {
+    var nupdated = 0;
+    for (var i = 0; i < this.nrows; i++) {
         if (!this.updaterow[i]) continue;
         if (this.canvas) {
             this.UpdateRowCanvas(i);
@@ -1119,15 +1071,6 @@ Terminal.prototype.UpdateScreen = function() {
     }
 }
 
-Terminal.prototype.UpdateScreenForScroll = function() {
-    var i;
-    if(this.bufferp < this.brows) this.bufferp++;
-    else this.bufferp = 0; //show the original state before the scrolling started
-    for (i = this.nrows - 1; i >= 0; i--){
-        this.UpdateRowTableForScroll(i);
-    }
-}
-
 Terminal.prototype.PrepareUpdateRow = function(row) {
     this.updaterow[row] = 1;
     if (this.framerequested) return;
@@ -1136,34 +1079,34 @@ Terminal.prototype.PrepareUpdateRow = function(row) {
 }
 
 Terminal.prototype.ScrollDown = function(draw) {
-    var tempscreen = this.screen[this.brows + this.scrollbottom];
-    var tempcolor = this.color[this.brows + this.scrollbottom];
+    var tempscreen = this.screen[this.scrollbottom];
+    var tempcolor = this.color[this.scrollbottom];
 
     for (var i = this.scrollbottom-1; i >= this.scrolltop; i--) {
         if (i == this.nrows-1) continue;
-        this.screen[this.brows + i + 1] = this.screen[this.brows + i];
-        this.color[this.brows + i + 1] = this.color[this.brows + i];
+        this.screen[i + 1] = this.screen[i];
+        this.color[i + 1] = this.color[i];
         if (draw) this.PrepareUpdateRow(i+1);
     }
-    this.screen[this.brows + this.scrolltop] = tempscreen;
-    this.color[this.brows + this.scrolltop] = tempcolor;
+    this.screen[this.scrolltop] = tempscreen;
+    this.color[this.scrolltop] = tempcolor;
     this.DeleteRow(this.scrolltop);
     if (draw) this.PrepareUpdateRow(this.scrolltop);
 }
 
 Terminal.prototype.ScrollUp = function(draw) {
-    var tempscreen = this.screen[this.brows + this.scrolltop];
-    var tempcolor = this.color[this.brows + this.scrolltop];
+    var tempscreen = this.screen[this.scrolltop];
+    var tempcolor = this.color[this.scrolltop];
 
     for (var i = this.scrolltop+1; i <= this.scrollbottom; i++) {
         if (i == 0) continue;
-        this.screen[this.brows + i - 1] = this.screen[this.brows + i];
-        this.color[this.brows + i - 1] = this.color[this.brows + i];
+        this.screen[i - 1] = this.screen[i];
+        this.color[i - 1] = this.color[i];
         if (draw) this.PrepareUpdateRow(i-1);
     }
 
-    this.screen[this.brows + this.scrollbottom] = tempscreen;
-    this.color[this.brows + this.scrollbottom] = tempcolor;
+    this.screen[this.scrollbottom] = tempscreen;
+    this.color[this.scrollbottom] = tempcolor;
     this.DeleteRow(this.scrollbottom);
     if (draw) this.PrepareUpdateRow(this.scrollbottom);
 };
@@ -1498,8 +1441,8 @@ Terminal.prototype.HandleEscapeSequence = function() {
             if (count == 0) count = 1;
             var n = 0;n
             for (var j = this.cursorx+count; j < this.ncolumns; j++) {
-                this.screen[this.brows + this.cursory][this.cursorx+n] = this.screen[this.brows + this.cursory][j];
-                this.color[this.brows + this.cursory][this.cursorx+n] = this.color[this.brows + this.cursory][j];
+                this.screen[this.cursory][this.cursorx+n] = this.screen[this.cursory][j];
+                this.color[this.cursory][this.cursorx+n] = this.color[this.cursory][j];
                 n++;
             }
             this.DeleteArea(this.cursory, this.ncolumns-count, this.cursory, this.ncolumns-1);
@@ -1522,8 +1465,8 @@ Terminal.prototype.HandleEscapeSequence = function() {
             count = numbers.length ? numbers[0] : 1;
             if (count == 0) count = 1;
             for (var j = 0; j < count; j++) {
-                this.screen[this.brows + this.cursory][this.cursorx+j] = 0x20;
-                this.color[this.brows + this.cursory][this.cursorx+j] = this.GetColor();
+                this.screen[this.cursory][this.cursorx+j] = 0x20;
+                this.color[this.cursory][this.cursorx+j] = this.GetColor();
             }
             this.PrepareUpdateRow(this.cursory);
             break;    
@@ -1607,8 +1550,8 @@ Terminal.prototype.PutChar = function(c) {
                 this.LineFeed();
                 this.cursorx = 0;
             }
-            this.screen[this.brows + this.cursory][this.cursorx] = 0x20;
-            this.color[this.brows + this.cursory][this.cursorx] = this.attr_color;  
+            this.screen[this.cursory][this.cursorx] = 0x20;
+            this.color[this.cursory][this.cursorx] = this.attr_color;	
             this.cursorx++;
         } while(spaces--);
         this.PrepareUpdateRow(this.cursory);
@@ -1635,9 +1578,9 @@ Terminal.prototype.PutChar = function(c) {
     if (c == -1) return;
     var cx = this.cursorx;
     var cy = this.cursory;
-    this.screen[this.brows + cy][cx] = c;
+    this.screen[cy][cx] = c;
 
-    this.color[this.brows + cy][cx] = this.GetColor();
+    this.color[cy][cx] = this.GetColor();
     this.cursorx++;
     //message.Debug("Write: " + String.fromCharCode(c));
     this.PrepareUpdateRow(cy);
@@ -1762,24 +1705,27 @@ function jor1kGUI(parameters)
 
     this.params.path = this.params.path || "";
 
-    this.params.system.kernelURL = this.params.system.kernelURL || "vmlinux.bin.bz2";
+    console.log("kernel URL: " + this.params.system.kernelURL);
     this.params.system.memorysize = this.params.system.memorysize || 32;
     this.params.system.arch = this.params.system.arch || "or1k";
     this.params.system.cpu = this.params.system.cpu || "asm";
     this.params.system.ncores = this.params.system.ncores || 1;
     this.params.syncURL = this.params.syncURL || "";
 
-    this.params.fs = this.params.fs  || {};
-    this.params.fs.basefsURL = this.params.fs.basefsURL || "basefs.json";
-    this.params.fs.earlyload = this.params.fs.earlyload  || [];
-    this.params.fs.lazyloadimages = this.params.fs.lazyloadimages  || [];
+    if (typeof this.params.fs !== "undefined") {
+        this.params.fs.path = this.params.fs.path || this.params.path;
+        this.params.fs.basefsURL = this.params.fs.basefsURL || "basefs.json";
+        this.params.fs.basefsURL = this.params.fs.path + this.params.fs.basefsURL;
+        if (this.params.fs.extendedfsURL) {
+            this.params.fs.extendedfsURL = this.params.fs.path + this.params.fs.extendedfsURL;
+        }
+        this.params.fs.earlyload = this.params.fs.earlyload  || [];
+        this.params.fs.lazyloadimages = this.params.fs.lazyloadimages  || [];
+    }
 
     // add path to every URL
     this.params.system.kernelURL = this.params.path + this.params.system.kernelURL;
-    this.params.fs.basefsURL = this.params.path + this.params.fs.basefsURL;
-    if (this.params.fs.extendedfsURL) {
-        this.params.fs.extendedfsURL = this.params.path + this.params.fs.extendedfsURL;
-    }
+    this.params.system.dtbURL = this.params.path + this.params.system.dtbURL;
 
     this.params.userid = this.params.userid || "";
 
@@ -1789,6 +1735,7 @@ function jor1kGUI(parameters)
         this.params.worker : new Worker("jor1k-worker-min.js");
 
     message.SetWorker(this.worker);
+    message.Send("WorkingPath", this.params.path);
 
     // ----
 
@@ -1872,7 +1819,6 @@ function jor1kGUI(parameters)
     else
       Window.onmousedown = recordTarget; // IE 10 support (untested)
 
-
     document.onkeypress = function(event) {
         if(this.IgnoreKeys()) return true;
         if ((this.lastMouseDownTarget == TERMINAL) || (this.lastMouseDownTarget == this.clipboard)) {
@@ -1943,12 +1889,6 @@ jor1kGUI.prototype.ShowIPS = function(ips) {
    }
 };
 
-
-jor1kGUI.prototype.ChangeCore = function(core) {
-    message.Send("ChangeCore", core);
-};
-
-
 jor1kGUI.prototype.Reset = function () {
     this.stop = false; // VM Stopped/Aborted
     this.userpaused = false;
@@ -1957,7 +1897,8 @@ jor1kGUI.prototype.Reset = function () {
     message.Send("Init", this.params.system);
     message.Send("Reset");
     message.Send("LoadAndStart", this.params.system.kernelURL);
-    message.Send("LoadFilesystem", this.params.fs);
+
+    if (this.params.fs) message.Send("LoadFilesystem", this.params.fs);
 
     if (this.terms.length > 0) {
         this.terms.forEach(function (term) {

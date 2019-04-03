@@ -132,7 +132,7 @@ var SR_DME = 0; // Data MMU Enabled
 var SR_IME = 0; // Instruction MMU Enabled
 var SR_LEE = 0; // Little Endian Enabled
 var SR_CE = 0; // CID Enabled ?
-var SR_F = 0; // Flag for l.sf... instructions 
+var SR_F = 0; // Flag for l.sf... instructions
 var SR_CY = 0; // Carry Flag
 var SR_OV = 0; // Overflow Flag
 var SR_OVE = 0; // Overflow Flag Exception
@@ -151,8 +151,8 @@ var snoopbitfield = 0x0; // fot atomic instructions
 function Init(_ncores) {
     _ncores = _ncores|0;
     ncores = _ncores|0;
-    if ((ncores|0) == 32) 
-        ncoresmask = 0xFFFFFFFF; 
+    if ((ncores|0) == 32)
+        ncoresmask = 0xFFFFFFFF;
     else
         ncoresmask =  (1 << ncores)-1|0;
     AnalyzeImage();
@@ -309,14 +309,6 @@ function InvalidateTLB() {
 
 // ------------------------------------------
 
-// SMP cpus cannot be switched.
-function PutState() {
-}
-
-function GetState() {
-}
-
-// ------------------------------------------
 // Timer functions
 
 function TimerSetInterruptFlag(coreid) {
@@ -338,7 +330,6 @@ function TimerGetTicksToNextInterrupt(coreid) {
     coreid = coreid|0;
     var delta = 0;
     delta = (h[(coreid<<15) + TTMRp >>2] & 0xFFFFFFF) - (h[TTCRp >>2] & 0xFFFFFFF) |0;
-    if ((delta|0) < 0) delta = delta + 0xFFFFFFF | 0;
     return delta|0;
 }
 
@@ -888,7 +879,7 @@ function DTLBLookup(addr, write) {
 
     setindex = (addr >> 13) & 63; // check these values
     tlmbr = h[corep + group1p + ((0x200 | setindex) << 2) >> 2]|0; // match register
-     
+
     if ((tlmbr & 1) == 0) {
         // use tlb refill to fasten up
         if (DTLBRefill(addr, 64)|0) {
@@ -1017,19 +1008,18 @@ function Step(steps, clockspeed) {
             // check for any interrupts
             // SR_TEE is set or cleared at the same time as SR_IEE in Linux, so skip this check
             if (SR_IEE|0) {
-                if (h[corep + TTMRp >> 2] & (1 << 28)) {
-                    Exception(EXCEPT_TICK, h[corep + group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
-                    // treat exception directly here
-                    pc = nextpc;
-                } else
                 if (h[corep + raise_interruptp >> 2]|0) {
                     h[corep + raise_interruptp >> 2] = 0;
                     Exception(EXCEPT_INT, h[corep + group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
                     // treat exception directly here
                     pc = nextpc;
+                } else
+                if (h[corep + TTMRp >> 2] & (1 << 28)) {
+                    Exception(EXCEPT_TICK, h[corep + group0p + (SPR_EEAR_BASE<<2) >> 2]|0);
+                    // treat exception directly here
+                    pc = nextpc;
                 }
             }
- //     }
 
             // Get instruction pointer
             if ((instlbcheck ^ pc) & 0xFFFFE000) // short check if it is still the correct page
@@ -1319,17 +1309,26 @@ function Step(steps, clockspeed) {
             }
             break;
 
-
         case 0x27:
-            // addi signed 
+            // addi signed
             imm = (ins << 16) >> 16;
             rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
-            r[corep + ((ins >> 19) & 0x7C) >> 2] = rA + imm|0;
-            //rindex = ((ins >> 19) & 0x7C);
-            //SR_CY = r[corep + rindex] < rA;
-            //SR_OV = (((rA ^ imm ^ -1) & (rA ^ r[corep + rindex])) & 0x80000000)?true:false;
-            //TODO overflow and carry
-            // maybe wrong
+            rindex = corep + ((ins >> 19) & 0x7C)|0;
+            r[rindex >> 2] = rA + imm|0;
+            SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
+            break;
+
+        case 0x28:
+            // addi signed with carry
+            imm = (ins << 16) >> 16;
+            rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
+            rindex = corep + ((ins >> 19) & 0x7C)|0;
+            r[rindex >> 2] = (rA + imm|0) + (SR_CY?1:0)|0;
+            if (SR_CY|0) {
+                SR_CY = (r[rindex>>2]>>>0) <= (rA>>>0);
+            } else {
+                SR_CY = (r[rindex>>2]>>>0) < (rA>>>0);
+            }
             break;
 
         case 0x29:
@@ -1344,9 +1343,15 @@ function Step(steps, clockspeed) {
             break;
 
         case 0x2B:
-            // xori            
+            // xori
             rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
             r[corep + ((ins >> 19) & 0x7C)>>2] = rA ^ ((ins << 16) >> 16);
+            break;
+
+        case 0x2C:
+            // muli
+            rA = r[corep + ((ins >> 14) & 0x7C)>>2]|0;
+            r[corep + ((ins >> 19) & 0x7C)>>2] = imul(rA|0, (ins << 16) >> 16)|0;
             break;
 
         case 0x2D:
@@ -1635,13 +1640,23 @@ function Step(steps, clockspeed) {
             rindex = (ins >> 19) & 0x7C;
             switch (ins & 0x3CF) {
             case 0x0:
-                // add signed 
-                r[corep + rindex>>2] = rA + rB;
+                // add
+                r[corep + rindex>>2] = rA + rB|0;
+                SR_CY = (r[corep + rindex>>2]>>>0) < (rA>>>0);
+                break;
+            case 0x1:
+                // add with carry
+                r[corep + rindex>>2] = (rA + rB|0) + (SR_CY?1:0)|0;
+                if (SR_CY|0) {
+                    SR_CY = (r[corep + rindex>>2]>>>0) <= (rA>>>0);
+                } else {
+                    SR_CY = (r[corep + rindex>>2]>>>0) < (rA>>>0);
+                }
                 break;
             case 0x2:
                 // sub signed
                 r[corep + rindex>>2] = rA - rB;
-                //TODO overflow and carry
+                SR_CY = (rB>>>0) > (rA>>>0);
                 break;
             case 0x3:
                 // and
@@ -1659,9 +1674,21 @@ function Step(steps, clockspeed) {
                 // sll
                 r[corep + rindex>>2] = rA << (rB & 0x1F);
                 break;
+            case 0xc:
+                // exths
+                r[corep + rindex>>2] = (rA << 16) >> 16;
+                continue;
+            case 0xe:
+                // cmov
+                r[corep + rindex>>2] = SR_F?rA:rB;
+                break;
             case 0x48:
                 // srl not signed
                 r[corep + rindex>>2] = rA >>> (rB & 0x1F);
+                break;
+            case 0x4c:
+                // extbs
+                r[corep + rindex>>2] = (rA << 24) >> 24;
                 break;
             case 0xf:
                 // ff1
@@ -1690,38 +1717,24 @@ function Step(steps, clockspeed) {
                 break;
             case 0x306:
                 // mul signed (specification seems to be wrong)
-                {                    
-                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested. 
-                    //r[corep + (rindex<<2)>>2] = (rA >> 0) * (rB >> 0);
+                {
+                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested.
                     r[corep + rindex>>2] = imul(rA|0, rB|0)|0;
-                    /*
-                    var rAl = rA & 0xFFFF;
-                    var rBl = rB & 0xFFFF;
-                    r[corep + rindex<<2>>2] = r[corep + rindex<<2>>2] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
-                    var result = Number(int32(rA)) * Number(int32(rB));
-                    SR_OV = (result < (-2147483647 - 1)) || (result > (2147483647));
-                    var uresult = uint32(rA) * uint32(rB);
-                    SR_CY = (uresult > (4294967295));
-                    */
-                    
                 }
                 break;
             case 0x30a:
                 // divu (specification seems to be wrong)
-                SR_CY = (rB|0) == 0;
-                SR_OV = 0;
-                if (!SR_CY) {
-                    r[corep + rindex>>2] = /*Math.floor*/((rA>>>0) / (rB>>>0));
+                SR_OV = (rB|0) == 0;
+                if (!SR_OV) {
+                    r[corep + rindex>>2] = (rA>>>0) / (rB>>>0);
                 }
                 break;
             case 0x309:
                 // div (specification seems to be wrong)
-                SR_CY = (rB|0) == 0;
-                SR_OV = 0;
-                if (!SR_CY) {
+                SR_OV = (rB|0) == 0;
+                if (!SR_OV) {
                     r[corep + rindex>>2] = (rA|0) / (rB|0);
                 }
-
                 break;
             default:
                 //DebugMessage("Error: op38 opcode not supported yet");
@@ -1800,8 +1813,6 @@ return {
     Step: Step,
     GetFlags: GetFlags,
     SetFlags: SetFlags,
-    PutState: PutState,
-    GetState: GetState,    
     GetTimeToNextInterrupt: GetTimeToNextInterrupt,
     ProgressTime: ProgressTime,
     GetTicks: GetTicks,
@@ -1811,6 +1822,5 @@ return {
 };
 
 }
-
 
 module.exports = SMPCPU;

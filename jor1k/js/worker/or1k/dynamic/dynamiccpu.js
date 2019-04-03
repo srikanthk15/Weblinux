@@ -31,7 +31,7 @@ var EXCEPT_SYSCALL = 0xC00; // syscall, jump into supervisor mode
 var EXCEPT_TRAP = 0xE00; // syscall, jump into supervisor mode
 
 // constructor
-function SafeCPU(ram) {
+function DynamicCPU(ram) {
     this.ram = ram;
 
     // registers
@@ -68,8 +68,6 @@ function SafeCPU(ram) {
     this.PICMR = 0x3; // interrupt controller mode register (use nmi)
     this.PICSR = 0x0; // interrupt controller set register
 
-    this.nnn = 0x0;
-
     // flags
     this.SR_SM = true; // supervisor mode
     this.SR_TEE = false; // tick timer Exception Enabled
@@ -80,7 +78,7 @@ function SafeCPU(ram) {
     this.SR_IME = false; // Instruction MMU Enabled
     this.SR_LEE = false; // Little Endian Enabled
     this.SR_CE = false; // CID Enabled ?
-    this.SR_F = false; // Flag for l.sf... instructions 
+    this.SR_F = false; // Flag for l.sf... instructions
     this.SR_CY = false; // Carry Flag
     this.SR_OV = false; // Overflow Flag
     this.SR_OVE = false; // Overflow Flag Exception
@@ -90,13 +88,13 @@ function SafeCPU(ram) {
     this.SR_SUMRA = false; // SPRS User Mode Read Access, or TRAP exception disable?
     this.SR_CID = 0x0; //Context ID
 
-    this.rc = new RecompileCPU(this.ram, this);
-    this.pagestatus = new Uint8Array(this.ram.heap, 0x8000, 0x8000);
+    this.recompilepath = '';
+    this.recompilepid = -1;
 
     this.Reset();
 }
 
-SafeCPU.prototype.Reset = function() {
+DynamicCPU.prototype.Reset = function() {
     this.TTMR = 0x0;
     this.TTCR = 0x0;
     this.PICMR = 0x3;
@@ -122,48 +120,33 @@ SafeCPU.prototype.Reset = function() {
     this.nextpc = this.nextpc + 1|0;
 }
 
-SafeCPU.prototype.InvalidateTLB = function() {
+DynamicCPU.prototype.InvalidateTLB = function() {
 }
 
-SafeCPU.prototype.CorrectDTLBException = function(pc, delayedins) {
-    this.SetSPR(SPR_EPCR_BASE, (pc<<2) - (delayedins ? 4 : 0));
-}
-
-SafeCPU.prototype.GetTimeToNextInterrupt = function () {
+DynamicCPU.prototype.GetTimeToNextInterrupt = function () {
 
     if ((this.TTMR >> 30) == 0) return -1;
     var delta = (this.TTMR & 0xFFFFFFF) - (this.TTCR & 0xFFFFFFF);
-    delta += delta<0?0xFFFFFFF:0x0;
     return delta;
 }
 
-SafeCPU.prototype.GetTicks = function () {
+DynamicCPU.prototype.GetTicks = function () {
     if ((this.TTMR >> 30) == 0) return -1;
     return this.TTCR & 0xFFFFFFF;
 }
 
-SafeCPU.prototype.ProgressTime = function (delta) {
+DynamicCPU.prototype.ProgressTime = function (delta) {
     this.TTCR = (this.TTCR + delta) & 0xFFFFFFFF;
 }
 
-
-SafeCPU.prototype.AnalyzeImage = function() // we haveto define these to copy the cpus
+DynamicCPU.prototype.AnalyzeImage = function() // we haveto define these to copy the cpus
 {
-    this.boot_dtlb_misshandler_address = 0x0;
-    this.boot_itlb_misshandler_address = 0x0;
-    this.current_pgd = 0x0;
-
-//    this.rc.Recompile(0xc04c2684, 0x4c2684); // parse_early_options
-//    this.rc.Recompile(0x100, 0x100); // reset
-//    this.rc.Recompile(0x4be000, 0x4be000); // __init_begin
-//    this.rc.Recompile(0x2000, 0x2000); // dtlb miss handler
-//    this.rc.Recompile(0x2160, 0x2160); // itlb miss handler
-//    this.rc.Recompile(0x2498, 0x2498); // trampoline_out
-//    this.rc.Recompile(0x2600, 0x2600); // early_uart_init
-//    this.rc.Recompile(0xC01bbab4, 0x1bbab4); // memcpy
+    this.boot_dtlb_misshandler_address = this.ram.int32mem[0x900]|0;
+    this.boot_itlb_misshandler_address = this.ram.int32mem[0xA00]|0;;
+    this.current_pgd = ((this.ram.int32mem[0x2010 >> 2]&0xFFF)<<16) | (this.ram.int32mem[0x2014 >> 2] & 0xFFFF)|0;;
 }
 
-SafeCPU.prototype.SetFlags = function (x) {
+DynamicCPU.prototype.SetFlags = function (x) {
     this.SR_SM = (x & (1 << 0)) ? true : false;
     this.SR_TEE = (x & (1 << 1)) ? true : false;
     var old_SR_IEE = this.SR_IEE;
@@ -206,7 +189,7 @@ SafeCPU.prototype.SetFlags = function (x) {
     }
 };
 
-SafeCPU.prototype.GetFlags = function () {
+DynamicCPU.prototype.GetFlags = function () {
     var x = 0x0;
     x |= this.SR_SM ? (1 << 0) : 0;
     x |= this.SR_TEE ? (1 << 1) : 0;
@@ -229,7 +212,7 @@ SafeCPU.prototype.GetFlags = function () {
     return x;
 };
 
-SafeCPU.prototype.CheckForInterrupt = function () {
+DynamicCPU.prototype.CheckForInterrupt = function () {
     if (!this.SR_IEE) {
         return;
     }
@@ -238,17 +221,31 @@ SafeCPU.prototype.CheckForInterrupt = function () {
     }
 };
 
-SafeCPU.prototype.RaiseInterrupt = function (line, cpuid) {
+DynamicCPU.prototype.RaiseInterrupt = function (line, cpuid) {
     var lmask = 1 << line;
     this.PICSR |= lmask;
     this.CheckForInterrupt();
 };
 
-SafeCPU.prototype.ClearInterrupt = function (line, cpuid) {
+DynamicCPU.prototype.ClearInterrupt = function (line, cpuid) {
     this.PICSR &= ~(1 << line);
 };
 
-SafeCPU.prototype.SetSPR = function (idx, x) {
+DynamicCPU.prototype.FetchAndInstantiate = function(url, importObject) {
+  return fetch(url).then(response =>
+    response.arrayBuffer()
+  ).then(bytes =>
+    //WebAssembly.compile(bytes)
+    WebAssembly.instantiate(bytes, importObject)
+  ).then(results => {
+    message.Debug('compiled');
+    this.instance = results.instance;
+    }
+  );
+}
+
+
+DynamicCPU.prototype.SetSPR = function (idx, x) {
     var address = idx & 0x7FF;
     var group = (idx >> 11) & 0x1F;
 
@@ -256,6 +253,41 @@ SafeCPU.prototype.SetSPR = function (idx, x) {
     case 0:
         if (address == SPR_SR) {
             this.SetFlags(x);
+        }
+        if (address == 20) {
+            //message.Debug('current pid: ' + x);
+        } else
+        if (address == 21) {
+            this.recompilepid = x;
+            if (x == -1) this.recompilepath = '';
+            else {
+                message.Debug("recompile pid: " + x + " path:" + this.recompilepath);
+                var importObject = {
+                    env: {
+                        Exception: function(excepttype, addr) {
+                            //message.Debug("Exception called at " + utils.ToHex(addr));
+                            //message.Abort();
+                            this.SR_F = !!this.instance.exports.GetSR_F();
+                            this.pc = this.instance.exports.GetPC()>>2;
+                            this.delayedins = false;
+                            this.Exception(excepttype, addr);
+                        }.bind(this),
+                        ramp: 0x100000,
+                        group1p: 0x4000,
+                        current_pgd: this.current_pgd,
+                        EXCEPT_DPF: 0x300,
+                        memory: this.ram.memory,
+                        table: new WebAssembly.Table({initial:0, maximum:0, element:"anyfunc"}),
+                        memoryBase: 0x0,
+                        tableBase: 0x0
+                    },
+                };
+                if (this.recompilepath == "/usr/bin/fbdemo")
+                this.FetchAndInstantiate(message.GetWorkingPath()+"/precompiled/fbdemo.wasm", importObject);
+            }
+        } else
+        if (address == 22) {
+            this.recompilepath += String.fromCharCode(x);
         }
         this.group0[address] = x;
         break;
@@ -322,7 +354,7 @@ SafeCPU.prototype.SetSPR = function (idx, x) {
     }
 };
 
-SafeCPU.prototype.GetSPR = function (idx) {
+DynamicCPU.prototype.GetSPR = function (idx) {
     var address = idx & 0x7FF;
     var group = (idx >> 11) & 0x1F;
 
@@ -374,7 +406,7 @@ SafeCPU.prototype.GetSPR = function (idx) {
 };
 
 
-SafeCPU.prototype.Exception = function (excepttype, addr) {
+DynamicCPU.prototype.Exception = function (excepttype, addr) {
     var except_vector = excepttype | (this.SR_EPH ? 0xf0000000 : 0x0);
     //message.Debug("Info: Raising Exception " + utils.ToHex(excepttype));
 
@@ -421,7 +453,7 @@ SafeCPU.prototype.Exception = function (excepttype, addr) {
 };
 
 
-SafeCPU.prototype.DTLBLookup = function (addr, write) {
+DynamicCPU.prototype.DTLBLookup = function (addr, write) {
     if (!this.SR_DME) {
         return addr;
     }
@@ -435,12 +467,12 @@ SafeCPU.prototype.DTLBLookup = function (addr, write) {
         this.Exception(EXCEPT_DTLBMISS, addr);
         return -1;
     }
-        // set lru 
+        // set lru
         if (tlmbr & 0xC0) {
             message.Debug("Error: LRU ist not supported");
             message.Abort();
         }
-    
+
     var tlbtr = this.group1[0x280 | setindex]; // translate register
 
     // check if supervisor mode
@@ -465,22 +497,22 @@ SafeCPU.prototype.DTLBLookup = function (addr, write) {
 };
 
 // the slow and safe version
-SafeCPU.prototype.GetInstructionPointer = function (addr) {
+DynamicCPU.prototype.GetInstructionPointer = function (addr) {
     if (!this.SR_IME) {
         return addr;
     }
     // pagesize is 8192 bytes
     // nways are 1
     // nsets are 64
-    
+
     var setindex = (addr >> 13) & 63;
     setindex &= 63; // number of sets
     var tlmbr = this.group2[0x200 | setindex];
 
     // test if tlmbr is valid
     if (((tlmbr & 1) == 0) || ((tlmbr >> 19) != (addr >> 19))) {
-            this.Exception(EXCEPT_ITLBMISS, this.pc<<2);
-            return -1;
+        this.Exception(EXCEPT_ITLBMISS, this.pc<<2);
+        return -1;
     }
     // set lru
     if (tlmbr & 0xC0) {
@@ -507,7 +539,7 @@ SafeCPU.prototype.GetInstructionPointer = function (addr) {
     return (tlbtr & 0xFFFFE000) | (addr & 0x1FFF);
 };
 
-SafeCPU.prototype.Step = function (steps, clockspeed) {
+DynamicCPU.prototype.Step = function (steps, clockspeed) {
     steps = steps|0;
     clockspeed = clockspeed|0;
     var ins = 0x0;
@@ -532,7 +564,8 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
     var jump = 0x0;
     var delta = 0x0;
 
-    var dsteps = 256;
+    var dsteps = 0;
+    var waitoneblock = 0;
 
     for(;;) {
         dsteps = dsteps - 1|0;
@@ -543,42 +576,43 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 this.delayedins = false;
             }
 
-        // do this not so often
-        if (dsteps < 0)
-        if (!this.delayedins_at_fence) { // Not sure, if we need this check
-            dsteps = dsteps + 256|0;
-            steps = steps - 256|0;
-            if (steps < 0) return 0;
+            // do this not so often
+            if (dsteps < 0)
+            if (!this.delayedins_at_fence) { // Not sure, if we need this check
+                dsteps = dsteps + 64|0;
+                steps = steps - 64|0;
+                if (steps < 0) return 0;
 
-            // ---------- TICK ----------
-            // timer enabled
-            if ((this.TTMR >> 30) != 0) {
-                delta = (this.TTMR & 0xFFFFFFF) - (this.TTCR & 0xFFFFFFF);
-                delta += delta<0?0xFFFFFFF:0x0;
-                this.TTCR = (this.TTCR + clockspeed) & 0xFFFFFFFF;
-                if (delta < clockspeed) {
-                    // if interrupt enabled
-                    if (this.TTMR & (1 << 29)) {
-                        this.TTMR |= (1 << 28); // set pending interrupt
+                // ---------- TICK ----------
+                // timer enabled
+                if ((this.TTMR >> 30) != 0) {
+                    delta = (this.TTMR & 0xFFFFFFF) - (this.TTCR & 0xFFFFFFF);
+                    this.TTCR = (this.TTCR + clockspeed) & 0xFFFFFFFF;
+                    if (delta < clockspeed) {
+                        // if interrupt enabled
+                        if (this.TTMR & (1 << 29)) {
+                            this.TTMR |= (1 << 28); // set pending interrupt
+                        }
+                    }
+                }
+
+                // check if pending and check if interrupt must be triggered
+                if (this.SR_TEE) { // SR_IEE and SR_TEE are always set parallel
+                    if (this.TTMR & (1 << 28)) {
+                        this.Exception(EXCEPT_TICK, this.group0[SPR_EEAR_BASE]);
+                        this.pc = this.nextpc|0;
+                        this.nextpc = this.nextpc + 1|0;
                     }
                 }
             }
 
-            // check if pending and check if interrupt must be triggered
-            if (this.SR_TEE) { // SR_IEE and SR_TEE are always set parallel
-                if (this.TTMR & (1 << 28)) {
-                    this.Exception(EXCEPT_TICK, this.group0[SPR_EEAR_BASE]);
-                    this.pc = this.nextpc|0;
-                    this.nextpc = this.nextpc + 1|0;
-                } else
-                if (this.raise_interrupt) {
-                    this.raise_interrupt = false;
-                    this.Exception(EXCEPT_INT, this.group0[SPR_EEAR_BASE]);
-                    this.pc = this.nextpc|0;
-                    this.nextpc = this.nextpc + 1|0;
-                }
+            if (this.SR_IEE)
+            if (this.raise_interrupt) {
+                this.raise_interrupt = false;
+                this.Exception(EXCEPT_INT, this.group0[SPR_EEAR_BASE]);
+                this.pc = this.nextpc|0;
+                this.nextpc = this.nextpc + 1|0;
             }
-        }
 
             var ppc = this.GetInstructionPointer(this.pc<<2)|0;
             if (ppc == -1) {
@@ -592,81 +626,56 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             if (this.delayedins_at_fence) {
                 this.delayedins_at_fence = false;
                 this.fence = this.ppc + 4|0;
-                //nextpc = jump;
             } else {
                 this.fence = ((this.ppc >> 13) + 1) << 13; // next page
-                //nextpc = ((pc >> 13) + 1) << 13;
-
-// --------------
-// we are at the perfect position for some optimizations
-
-        //if ((this.pc&0x3FFFFFFF) < 0x30000000)
-        if ((this.pc&0x3FFFFFFF) < 0x01000000)
-        if ((ppc) > 0x10000) {
-
-        var nn = this.rc.heuristic[ppc>>2];
-        if (nn>=0) {
-            nn++;
-            if (nn > 31000) {
-                //message.Debug("Found");
-                nn = -1;
-                    //if (this.nnn < 5)
-                        this.rc.Recompile(this.pc<<2, ppc, this.SR_SM);
-                    //this.nnn++;
-            }
-            this.rc.heuristic[ppc>>2] = nn;
-        }
+            } // pc and ppc check
 
 
-        } // pc and ppc check
+           if  ((!this.SR_SM) && (this.group0[20] == this.recompilepid) && this.instance && !waitoneblock && this.pc < 0x10000000) {
+	       //var newppc = this.instance.exports.DTLBLookup(this.pc, 0, this.pc, this.SR_F, 0)|0;
+	       //var newpc = this.instance.exports.DTLBRefill(this.pc|0, 64, this.pc|0, this.SR_F|0, 0)|0;
+               //message.Debug("" + utils.ToHex(newpc) + " " + utils.ToHex(ppc));
+               //message.Debug("" + utils.ToHex(newpc) + " " + utils.ToHex(this.ram.int32mem[this.current_pgd>>2]));
+
+               var oldpc = this.pc;
+               var maxsteps = steps;
+               //var maxsteps = this.GetTimeToNextInterrupt();
+               //if (steps < maxsteps) maxsteps = steps;
+               //message.Debug("run recompiled code initalsteps=" + maxsteps + " from pc=" + utils.ToHex(this.pc<<2) + " oldpc=" + utils.ToHex(this.oldpc<<2));
+
+               var retsteps = this.instance.exports.Exec(this.pc<<2, maxsteps, this.SR_F?1:0);
+               steps = retsteps;
+               // no exception
+               if (!this.SR_SM) {
+                   this.SR_F = !!this.instance.exports.GetSR_F();
+                   this.pc = this.instance.exports.GetPC()>>2;
+                   this.nextpc = this.pc + 1|0;
+                   this.fence = this.ppc|0;
+               }
+               dsteps = -1;
 /*
-        if (this.pagestatus[this.ppc>>13]==0) {
-            var f = this.rc.fns[this.ppc>>13][((this.ppc&8191)>>2)];
-            if (f) {
-                //message.Debug("Found at " + utils.ToHex(ppc) + " with pc=" + utils.ToHex(this.pc<<2));
-                f.fn.Execute();
-                dsteps = dsteps - f.n|0;
-                this.pc = this.nextpc|0;
-                this.nextpc = this.nextpc + 1|0;
-                this.ppc = this.ppc + (f.n<<2)|0;
-                this.fence = this.ppc|0;
-                continue;
-            }
-       }
+               message.Debug(
+                    "run done initalsteps=" +
+                    maxsteps +
+                    " returnedsteps=" +
+                    retsteps +
+                    " from pc=" + utils.ToHex(oldpc<<2) +
+                    " to pc=" + utils.ToHex(this.pc<<2) + " clockspeed=" + clockspeed);
 */
-// --------------
-        }
+               //if (steps == 0x0) return 0x0;
+               waitoneblock = 1;
+               continue;
+               //if (steps == 3) message.Debug('start recompiled code pc=' + utils.ToHex(this.pc<<2));
+           }
 
         } // end of fence
+        waitoneblock = 0;
 
         // ---------------------------------------
-/*
-        var ppc = this.GetInstructionPointer(this.pc<<2)|0;
-        if (ppc == -1) {
-            this.pc = this.nextpc|0;
-            this.nextpc = this.nextpc + 1|0;
-            continue;
-        }
-        this.ppc = ppc;
-*/
         ins = int32mem[this.ppc >> 2]|0;
         this.ppc = this.ppc + 4|0;
 
         switch ((ins >> 26)&0x3F) {
-
-        case 0x7:
-            var f2 = this.rc.fnsshort[ins & 0xFFFFFF];
-            rA = f2.fn.Execute()|0;
-            if (rA) {
-                this.nextpc = f2.fn.GetNextPC()|0;
-            }
-            dsteps = dsteps - f2.n|0;
-            this.pc = this.nextpc|0;
-            this.nextpc = this.nextpc + 1|0;
-            //this.ppc = this.ppc + (f2.n<<2) - 4|0;
-            this.fence = this.ppc|0;
-            this.delayedins_at_fence = false;
-            continue;
 
         case 0x0:
             // j
@@ -838,7 +847,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             break;
 
         case 0x25:
-            // lhz 
+            // lhz
             r[32] = r[(ins >> 16) & 0x1F] + ((ins << 16) >> 16);
             r[33] = this.DTLBLookup(r[32], false);
             if (r[33] == -1) {
@@ -858,11 +867,25 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             break;
 
         case 0x27:
-            // addi signed 
+            // addi signed
             imm = (ins << 16) >> 16;
             rA = r[(ins >> 16) & 0x1F];
             rindex = (ins >> 21) & 0x1F;
             r[rindex] = rA + imm;
+            this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+            break;
+
+        case 0x28:
+            // addi signed with carry
+            imm = (ins << 16) >> 16;
+            rA = r[(ins >> 16) & 0x1F];
+            rindex = (ins >> 21) & 0x1F;
+            r[rindex] = (rA + imm|0) + (this.SR_CY?1:0)|0;
+            if (this.SR_CY) {
+                this.SR_CY = (r[rindex]>>>0) <= (rA>>>0);
+            } else {
+                this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+            }
             break;
 
         case 0x29:
@@ -870,16 +893,27 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] & (ins & 0xFFFF);
             break;
 
-
         case 0x2A:
             // ori
             r[(ins >> 21) & 0x1F] = r[(ins >> 16) & 0x1F] | (ins & 0xFFFF);
             break;
 
         case 0x2B:
-            // xori            
+            // xori
             rA = r[(ins >> 16) & 0x1F];
             r[(ins >> 21) & 0x1F] = rA ^ ((ins << 16) >> 16);
+            break;
+
+        case 0x2C:
+            // muli
+            {
+            rindex = (ins >> 21) & 0x1F;
+            rA = r[(ins >> 16) & 0x1F];
+            r[rindex] = (rA * ((ins << 16) >> 16))&0xFFFFFFFF;
+            var rAl = rA & 0xFFFF;
+            var rBl = ins & 0xFFFF;
+            r[rindex] = r[rindex] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
+            }
             break;
 
         case 0x2D:
@@ -965,6 +999,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             this.SetSPR(r[(ins >> 16) & 0x1F] | imm, r[(ins >> 11) & 0x1F]);
             if (this.idle) {
                 this.idle = false;
+                if (this.raise_interrupt == false)
                 if (!(this.TTMR & (1 << 28))) {
                     this.pc = this.nextpc|0;
                     this.nextpc = this.nextpc + 1|0;
@@ -1057,12 +1092,11 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             }
             if (r[33] > 0) {
                 int32mem[r[33] >> 2] = r[(ins >> 11) & 0x1F];
-                //this.pagestatus[r[33]>>13] = 2;
             } else {
                 ram.Write32Big(r[33], r[(ins >> 11) & 0x1F]);
             }
             break;
-            
+
         case 0x35:
             // sw
             imm = ((((ins >> 10) & 0xF800) | (ins & 0x7FF)) << 16) >> 16;
@@ -1077,7 +1111,6 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             }
             if (r[33]>0) {
                 int32mem[r[33] >> 2] = r[(ins >> 11) & 0x1F];
-                //this.pagestatus[r[33]>>13] = 2;
             } else {
                 ram.Write32Big(r[33], r[(ins >> 11) & 0x1F]);
             }
@@ -1092,7 +1125,6 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             if (r[33] == -1) {
                 break;
             }
-            //this.pagestatus[r[33]>>13] = 2;
             ram.Write8Big(r[33], r[(ins >> 11) & 0x1F]);
             break;
 
@@ -1104,7 +1136,6 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             if (r[33] == -1) {
                 break;
             }
-            //this.pagestatus[r[33]>>13] = 2;
             ram.Write16Big(r[33], r[(ins >> 11) & 0x1F]);
             break;
 
@@ -1115,12 +1146,23 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             rindex = (ins >> 21) & 0x1F;
             switch (ins & 0x3CF) {
             case 0x0:
-                // add signed 
+                // add signed
                 r[rindex] = rA + rB;
+                this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+                break;
+            case 0x1:
+                // add with carry
+                r[rindex] = rA + rB + (this.SR_CY?1:0);
+                if (this.SR_CY) {
+                    this.SR_CY = (r[rindex]>>>0) <= (rA>>>0);
+                } else {
+                    this.SR_CY = (r[rindex]>>>0) < (rA>>>0);
+                }
                 break;
             case 0x2:
                 // sub signed
                 r[rindex] = rA - rB;
+                this.SR_CY = ((rB>>>0) > (rA>>>0));
                 break;
             case 0x3:
                 // and
@@ -1138,9 +1180,21 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 // sll
                 r[rindex] = rA << (rB & 0x1F);
                 break;
+            case 0xc:
+                // exths
+                r[rindex] = (rA << 16) >> 16;
+                break;
+            case 0xe:
+                // cmov
+                r[rindex] = this.SR_F?rA:rB;
+                break;
             case 0x48:
                 // srl not signed
                 r[rindex] = rA >>> (rB & 0x1F);
+                break;
+            case 0x4c:
+                // extbs
+                r[rindex] = (rA << 24) >> 24;
                 break;
             case 0xf:
                 // ff1
@@ -1169,8 +1223,8 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             case 0x306:
                 // mul signed (specification seems to be wrong)
                 {
-                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested. 
-                    r[rindex] = int32(rA >> 0) * int32(rB);
+                    // this is a hack to do 32 bit signed multiply. Seems to work but needs to be tested.
+                    r[rindex] = (rA|0) * (rB|0);
                     var rAl = rA & 0xFFFF;
                     var rBl = rB & 0xFFFF;
                     r[rindex] = r[rindex] & 0xFFFF0000 | ((rAl * rBl) & 0xFFFF);
@@ -1178,20 +1232,17 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
                 break;
             case 0x30a:
                 // divu (specification seems to be wrong)
-                this.SR_CY = rB == 0;
-                this.SR_OV = false;
-                if (!this.SR_CY) {
-                    r[rindex] = /*Math.floor*/((rA>>>0) / (rB>>>0));
+                this.SR_OV = rB == 0;
+                if (!this.SR_OV) {
+                    r[rindex] = (rA>>>0) / (rB>>>0);
                 }
                 break;
             case 0x309:
                 // div (specification seems to be wrong)
-                this.SR_CY = rB == 0;
-                this.SR_OV = false;
-                if (!this.SR_CY) {
+                this.SR_OV = rB == 0;
+                if (!this.SR_OV) {
                     r[rindex] = rA / rB;
                 }
-
                 break;
             default:
                 message.Debug("Error: op38 opcode not supported yet");
@@ -1254,7 +1305,7 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
             message.Abort();
             break;
         }
-
+        this.oldpc = this.pc|0;
         this.pc = this.nextpc|0;
         this.nextpc = this.nextpc + 1|0;
         //this.delayedins = false;
@@ -1262,4 +1313,6 @@ SafeCPU.prototype.Step = function (steps, clockspeed) {
     }  // main loop
     return 0;
 };
+
+module.exports = DynamicCPU;
 

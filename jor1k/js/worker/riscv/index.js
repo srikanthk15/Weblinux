@@ -10,7 +10,6 @@ var imul = require('../imul');
 // CPUs
 var SafeCPU = require('./safecpu');
 var FastCPU = require('./fastcpu');
-var DynamicCPU = require('./dynamiccpu');
 
 var stdlib = {
     Int32Array : Int32Array,
@@ -54,11 +53,6 @@ function createCPU(cpuname, ram, htif, heap, ncores) {
         cpu.Init();
         return cpu;
     }
-    else if (cpuname === "dynamic") {
-        cpu = DynamicCPU(stdlib, foreign, heap);
-        cpu.Init();
-        return cpu;
-    }
     throw new Error("invalid CPU name:" + cpuname);
 }
 
@@ -83,7 +77,7 @@ CPU.prototype.toString = function() {
     str += "Current state of the machine\n";
 
 
-    if (this.cpu.pc) {
+    if (typeof this.cpu.pc != 'undefined') {
         str += "PC: " + utils.ToHex(this.cpu.pc) + "\n"; 
     } else {
         str += "PC: " + utils.ToHex(this.cpu.GetPC()) + "\n"; 
