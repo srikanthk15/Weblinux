@@ -73,7 +73,7 @@ const requireJsOptimizerFilesConfig = [
             'requireLib'
         ],
         insertRequire: ['cjs!jor1k/worker/worker']
-    }
+    },
 ];
 
 // Pushes all the source files through Babel for transpilation
@@ -87,9 +87,17 @@ gulp.task('js:babel', () => {
 gulp.task('js:optimize', ['js:babel'], () => {
     const baseConfig = objectAssign({}, requireJsOptimizerBaseConfig, { baseUrl: 'temp' });
     const optimizedFiles = requireJsOptimizerFilesConfig.map(config => rjs(merge(baseConfig, config)));
+    const createErrorHandler = (name) => {
+        return (err) => {
+            console.error('Error from ' + name + ' in compress task\n', err.toString());
+        };
+    };
     return es.concat(optimizedFiles)
-        .pipe(uglify({ preserveComments: 'some' }))
-        .pipe(gulp.dest('./dist/'));
+        .on('error', createErrorHandler('es.concat'))
+        .pipe(uglify())
+        .on('error', createErrorHandler('uglify'))
+        .pipe(gulp.dest('./dist/'))
+        .on('error', createErrorHandler('gulp.dest'));
 });
 
 // Builds the distributable .js files by calling Babel then the r.js optimizer

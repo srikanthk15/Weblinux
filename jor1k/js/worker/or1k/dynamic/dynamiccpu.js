@@ -232,16 +232,15 @@ DynamicCPU.prototype.ClearInterrupt = function (line, cpuid) {
 };
 
 DynamicCPU.prototype.FetchAndInstantiate = function(url, importObject) {
-  return fetch(url).then(response =>
+  return fetch(url).then(function (response) {
     response.arrayBuffer()
-  ).then(bytes =>
-    //WebAssembly.compile(bytes)
+  }).then(function (bytes) {
+      //WebAssembly.compile(bytes)
     WebAssembly.instantiate(bytes, importObject)
-  ).then(results => {
+  }).then(function (results) {
     message.Debug('compiled');
     this.instance = results.instance;
-    }
-  );
+    });
 }
 
 

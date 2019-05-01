@@ -99,7 +99,7 @@ class Filebrowser {
             const self = this;
             $(this.id).contextmenu({
                 target: '#file-browser-context-menu',
-                before: function (e, context) {
+                before: (e, context) => {
                     e.preventDefault();
                     // execute code before context menu if shown
                     rightClickedItem = $(e.target);
@@ -126,7 +126,7 @@ class Filebrowser {
 
                     menuContainer.html(menuHtml);
                 },
-                onItem: function (context, e) {
+                onItem: (context, e) => {
                     // execute on menu item selection
                     const $target = $(e.target);
                     const action = $target.data('action');
@@ -331,8 +331,8 @@ class Filebrowser {
                 const droppedLocationItem = $(e.target);
                 const itemId = droppedLocationItem.data('id');
                 const writeDroppedFile = (i, done) => {
-                    (function (lenght) {
-                        if (lenght === files.length) {
+                    (() => {
+                        if (i === files.length) {
                             return done();
                         }
 
@@ -356,7 +356,7 @@ class Filebrowser {
                             }
                         };
                         reader.readAsBinaryString(file);
-                    }(i));
+                    })(i);
                 };
 
                 writeDroppedFile(0, () => {});

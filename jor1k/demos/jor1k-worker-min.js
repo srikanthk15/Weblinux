@@ -5389,6 +5389,7 @@ FS.prototype.LoadFile = function(idx) {
     }
     inode.status = STATUS_LOADING;
     this.filesinloadingqueue++;
+    message.Debug("inode url " + inode.url);
 
     if (inode.compressed) {
         inode.data = new Uint8Array(inode.size);
@@ -6096,6 +6097,7 @@ FSLoader.prototype.OnJSONLoaded = function(fsxml)
     this.sysrootdir = t.src;
     if (String(this.sysrootdir) !== this.sysrootdir) message.Debug("No sysroot (src tag)!");
     this.sysrootdir = this.fs.userinfo.path + this.sysrootdir + "/";
+    message.Debug("systemroot "+this.sysrootdir);
 
     this.HandleDirContents(t.fs, 0);
 
@@ -8089,7 +8091,7 @@ module.exports = DynamicCPU;
 },{"../../messagehandler":33,"../../utils":48}],35:[function(require,module,exports){
 var message = require('../messagehandler');
 
-function FastCPU(stdlib, foreign, heap) {
+var FastCPU = (stdlib, foreign, heap) => {
 "use asm";
 
 var floor = stdlib.Math.floor;
@@ -11031,7 +11033,7 @@ module.exports = SafeCPU;
 },{"../messagehandler":33,"../utils":48}],38:[function(require,module,exports){
 var message = require('../messagehandler');
 
-function SMPCPU(stdlib, foreign, heap) {
+var SMPCPU = (stdlib, foreign, heap) => {
 
 "use asm";
 
@@ -13721,7 +13723,7 @@ var DebugIns = require('./disassemble');
 
 
 // constructor
-function FastCPU(stdlib, foreign, heap) {
+var FastCPU = (stdlib, foreign, heap) => {
 "use asm";
 
 var DebugMessage = foreign.DebugMessage;
@@ -18888,6 +18890,7 @@ function LoadBinaryResourceII(url, OnSuccess, NonBlocking, OnError) {
 
 function LoadTextResource(url, OnSuccess, OnError) {
     var req = new XMLHttpRequest();
+    console.log("url " + url);
     req.open('GET', url, true);
     //req.overrideMimeType('text/xml');
     req.onreadystatechange = function () {

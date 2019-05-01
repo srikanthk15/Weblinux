@@ -85,7 +85,6 @@ FSLoader.prototype.OnJSONLoaded = function(fsxml)
     this.sysrootdir = t.src;
     if (String(this.sysrootdir) !== this.sysrootdir) message.Debug("No sysroot (src tag)!");
     this.sysrootdir = this.fs.userinfo.path + this.sysrootdir + "/";
-    console.log(this.sysrootdir.toString());
 
     this.HandleDirContents(t.fs, 0);
 

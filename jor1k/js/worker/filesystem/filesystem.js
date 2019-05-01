@@ -245,7 +245,6 @@ FS.prototype.LoadFile = function(idx) {
     }
     inode.status = STATUS_LOADING;
     this.filesinloadingqueue++;
-    message.Debug("inode url " + inode.url);
 
     if (inode.compressed) {
         inode.data = new Uint8Array(inode.size);

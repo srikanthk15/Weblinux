@@ -7,7 +7,7 @@ var DebugIns = require('./disassemble');
 
 
 // constructor
-const var DynamicCPU = (stdlib, foreign, heap) => {
+function DynamicCPU(stdlib, foreign, heap) {
 "use asm";
 
 var DebugMessage = foreign.DebugMessage;

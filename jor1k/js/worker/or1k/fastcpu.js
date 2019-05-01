@@ -1,6 +1,6 @@
 var message = require('../messagehandler');
 
-var FastCPU = (stdlib, foreign, heap) => {
+function FastCPU (stdlib, foreign, heap) {
 "use asm";
 
 var floor = stdlib.Math.floor;

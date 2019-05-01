@@ -42,7 +42,7 @@ gulp.task('build', ['lint', 'html', 'js', 'js:browserFS', 'css:dist', 'fonts', '
         console.log('Log of recent commits in distribution written to ' + chalk.magenta(recentCommitsFile));
     }).stdout;
 
-    return es.concat(buildStamp, recentCommitLog);
+    return es.merge(buildStamp, recentCommitLog);
 });
 
 gulp.task('default', (callback) => {

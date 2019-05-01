@@ -210,3 +210,8 @@ $RECYCLE.BIN/
 *.msi
 *.msm
 *.msp
+
+#userdefined
+jor1k-worker.js
+scripts.js
+*min.js

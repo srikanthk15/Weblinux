@@ -2,7 +2,9 @@
   "name": "sysbuild",
   "version": "0.0.0",
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "uglify-js": "^3.5.10"
+  },
   "devDependencies": {
     "babel-core": "^5.8.38",
     "chalk": "^1.1.1",
@@ -33,6 +35,7 @@
     "gulp-size": "^2.1.0",
     "gulp-sourcemaps": "^1.6.0",
     "gulp-uglify": "^1.5.3",
+    "gulp-uglify-es": "^1.0.4",
     "jasmine-core": "^2.4.1",
     "karma": "^0.13.22",
     "karma-babel-preprocessor": "^5.2.2",

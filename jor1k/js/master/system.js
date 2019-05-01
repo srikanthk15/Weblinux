@@ -47,9 +47,9 @@ function jor1kGUI(parameters)
     this.params.fs.path = this.params.fs.path || this.params.path;
     //this.params.fs.basefsURL = this.params.fs.basefsURL || "basefs.json";
     this.params.fs.basefsURL = this.params.fs.path + this.params.fs.basefsURL;
-    if (this.params.fs.extendedfsURL) {
-        this.params.fs.extendedfsURL = this.params.fs.path + this.params.fs.extendedfsURL;
-    }
+    //if (this.params.fs.extendedfsURL) {
+    this.params.fs.extendedfsURL = this.params.fs.path + this.params.fs.extendedfsURL;
+    //}
     this.params.fs.earlyload = this.params.fs.earlyload  || [];
     this.params.fs.lazyloadimages = this.params.fs.lazyloadimages  || [];
 

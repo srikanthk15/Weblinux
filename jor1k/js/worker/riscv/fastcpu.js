@@ -7,7 +7,7 @@ var DebugIns = require('./disassemble');
 
 
 // constructor
-var FastCPU = (stdlib, foreign, heap) => {
+function FastCPU(stdlib, foreign, heap) {
 "use asm";
 
 var DebugMessage = foreign.DebugMessage;

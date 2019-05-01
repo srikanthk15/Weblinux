@@ -1,6 +1,6 @@
 var message = require('../messagehandler');
 
-var SMPCPU = (stdlib, foreign, heap) => {
+function SMPCPU(stdlib, foreign, heap) {
 
 "use asm";
 
