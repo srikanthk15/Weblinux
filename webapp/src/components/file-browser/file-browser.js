@@ -99,7 +99,7 @@ class Filebrowser {
             const self = this;
             $(this.id).contextmenu({
                 target: '#file-browser-context-menu',
-                before: (e, context) => {
+                before: function (e, context) {
                     e.preventDefault();
                     // execute code before context menu if shown
                     rightClickedItem = $(e.target);
