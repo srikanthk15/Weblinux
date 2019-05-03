@@ -1,5 +1,5 @@
-75d23b7 1) Added error log for build optimize 2) Fix Uglify issue with '=>' in latest jor1k 3) Fix Compile issue because of no mapping to header files.
+8c475fa Merge branch 'master' into gh-pages
+665986d Deploy
+448fe1a 1) Added error log for build optimize 2) Fix Uglify issue with '=>' in latest jor1k 3) Fix Compile issue because of no mapping to header files.
 1f2049a 1) redirecting the url to local and different location
 40703e3 Update LICENSE.md
-173f4b9 Update LICENSE.md
-cc9eb63 Update LICENSE.md
