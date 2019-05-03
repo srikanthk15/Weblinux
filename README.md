@@ -1,5 +1,4 @@
-sys deploy
-===========
+Access to production for live demo here:
 
 https://remisharrock.github.io/sysbuild/
 

@@ -1712,16 +1712,23 @@ function jor1kGUI(parameters)
     this.params.system.ncores = this.params.system.ncores || 1;
     this.params.syncURL = this.params.syncURL || "";
 
+<<<<<<< HEAD
     /* ii
     f (typeof this.params.fs !== "undefined") {
        8yy this.params.fs.path = this.params.fs.path || this.params.path;
         //this.params.fs.basefsURL = this.params.fs.basefsURL || "basefs.json";
+=======
+    if (typeof this.params.fs !== "undefined") {
+        this.params.fs.path = this.params.fs.path || this.params.path;
+        this.params.fs.basefsURL = this.params.fs.basefsURL || "basefs.json";
+>>>>>>> master
         this.params.fs.basefsURL = this.params.fs.path + this.params.fs.basefsURL;
         if (this.params.fs.extendedfsURL) {
             this.params.fs.extendedfsURL = this.params.fs.path + this.params.fs.extendedfsURL;
         }
         this.params.fs.earlyload = this.params.fs.earlyload  || [];
         this.params.fs.lazyloadimages = this.params.fs.lazyloadimages  || [];
+<<<<<<< HEAD
     }*/
     this.params.fs.path = this.params.fs.path || this.params.path;
     //this.params.fs.basefsURL = this.params.fs.basefsURL || "basefs.json";
@@ -1731,6 +1738,9 @@ function jor1kGUI(parameters)
     //}
     this.params.fs.earlyload = this.params.fs.earlyload  || [];
     this.params.fs.lazyloadimages = this.params.fs.lazyloadimages  || [];
+=======
+    }
+>>>>>>> master
 
     // add path to every URL
     this.params.system.kernelURL = this.params.path + this.params.system.kernelURL;
